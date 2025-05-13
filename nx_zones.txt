@@ -1,0 +1,19 @@
+# Nonexistent DNS zones
+# One domain per line
+# Empty lines and lines starting with # are ignored
+# Subdomains are automatically included
+
+# Common nonexistent domains
+invalid.local
+nonexistent.com
+example.invalid
+test.invalid
+local.invalid
+
+# Bogus TLDs
+example.test
+example.invalid
+example.localhost
+example.local
+
+# Add your own nonexistent domains below

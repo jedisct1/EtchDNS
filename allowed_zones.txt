@@ -1,0 +1,19 @@
+# Allowed DNS zones
+# One domain per line
+# Empty lines and lines starting with # are ignored
+# Subdomains are automatically allowed
+
+# Common domains
+google.com
+gmail.com
+youtube.com
+github.com
+microsoft.com
+apple.com
+
+# Example domains
+example.com
+example.org
+example.net
+
+# Add your own domains below
