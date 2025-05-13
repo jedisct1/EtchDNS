@@ -1,0 +1,7 @@
+# EtchDNS Configuration File
+
+# Addresses to listen on (array of "ip:port" strings, default: ["0.0.0.0:10000"])
+listen_addresses = ["0.0.0.0:10000"]
+
+# Maximum DNS packet size in bytes (must be between 512 and 65536, default: 4096)
+dns_packet_len_max = 4096
