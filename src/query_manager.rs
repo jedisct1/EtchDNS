@@ -253,6 +253,10 @@ impl QueryManager {
         + 'static,
         client_ip: &str,
     ) -> EtchDnsResult<broadcast::Receiver<DnsResponse>> {
+        // Record client query in stats
+        if let Some(stats) = &self.stats {
+            stats.record_client_query().await;
+        }
         // Check if the query is of type ANY (255)
         if key.qtype == crate::dns_parser::DNS_TYPE_ANY {
             let log_msg = format!(
@@ -364,6 +368,11 @@ impl QueryManager {
                 if !cached_response.is_expired() {
                     log::debug!("Cache hit for query: {}", key.name);
 
+                    // Record cache hit in stats
+                    if let Some(stats) = &self.stats {
+                        stats.record_cache_hit().await;
+                    }
+
                     // Create a response channel
                     let (response_sender, receiver) = broadcast::channel(MAX_RECEIVERS);
 
@@ -415,9 +424,17 @@ impl QueryManager {
                         "Cache hit for query: {}, but response has expired",
                         key.name
                     );
+                    // Record cache miss in stats (expired entries count as misses)
+                    if let Some(stats) = &self.stats {
+                        stats.record_cache_miss().await;
+                    }
                 }
             } else {
                 log::debug!("Cache miss for query: {}", key.name);
+                // Record cache miss in stats
+                if let Some(stats) = &self.stats {
+                    stats.record_cache_miss().await;
+                }
             }
         }
 

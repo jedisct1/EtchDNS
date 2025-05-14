@@ -66,6 +66,21 @@ fn format_metrics(stats: &GlobalStats) -> String {
         stats.total_timeouts
     ));
 
+    output.push_str("# HELP etchdns_client_queries Total number of client DNS queries received\n");
+    output.push_str("# TYPE etchdns_client_queries counter\n");
+    output.push_str(&format!(
+        "etchdns_client_queries {}\n",
+        stats.client_queries
+    ));
+
+    output.push_str("# HELP etchdns_cache_hits Total number of DNS cache hits\n");
+    output.push_str("# TYPE etchdns_cache_hits counter\n");
+    output.push_str(&format!("etchdns_cache_hits {}\n", stats.cache_hits));
+
+    output.push_str("# HELP etchdns_cache_misses Total number of DNS cache misses\n");
+    output.push_str("# TYPE etchdns_cache_misses counter\n");
+    output.push_str(&format!("etchdns_cache_misses {}\n", stats.cache_misses));
+
     // Per-resolver metrics
     output.push_str("# HELP etchdns_resolver_response_time_ms Average response time in milliseconds per resolver\n");
     output.push_str("# TYPE etchdns_resolver_response_time_ms gauge\n");

@@ -86,6 +86,12 @@ pub struct GlobalStats {
     pub total_failed: u64,
     /// Total number of timed out queries
     pub total_timeouts: u64,
+    /// Total number of client queries received
+    pub client_queries: u64,
+    /// Total number of cache hits
+    pub cache_hits: u64,
+    /// Total number of cache misses
+    pub cache_misses: u64,
     /// Map of resolver addresses to their stats
     pub resolver_stats: HashMap<SocketAddr, ResolverStats>,
 }
@@ -98,6 +104,9 @@ impl GlobalStats {
             total_successful: 0,
             total_failed: 0,
             total_timeouts: 0,
+            client_queries: 0,
+            cache_hits: 0,
+            cache_misses: 0,
             resolver_stats: HashMap::new(),
         }
     }
@@ -132,6 +141,21 @@ impl GlobalStats {
     /// Get statistics for a specific resolver
     pub fn get_resolver_stats(&self, resolver: &SocketAddr) -> Option<&ResolverStats> {
         self.resolver_stats.get(resolver)
+    }
+
+    /// Record a client query
+    pub fn record_client_query(&mut self) {
+        self.client_queries += 1;
+    }
+
+    /// Record a cache hit
+    pub fn record_cache_hit(&mut self) {
+        self.cache_hits += 1;
+    }
+
+    /// Record a cache miss
+    pub fn record_cache_miss(&mut self) {
+        self.cache_misses += 1;
     }
 
     /// Get a list of resolvers sorted by response time (fastest first)
@@ -191,6 +215,24 @@ impl SharedStats {
     pub async fn get_stats(&self) -> GlobalStats {
         let stats = self.inner.lock().await;
         stats.clone()
+    }
+
+    /// Record a client query
+    pub async fn record_client_query(&self) {
+        let mut stats = self.inner.lock().await;
+        stats.record_client_query();
+    }
+
+    /// Record a cache hit
+    pub async fn record_cache_hit(&self) {
+        let mut stats = self.inner.lock().await;
+        stats.record_cache_hit();
+    }
+
+    /// Record a cache miss
+    pub async fn record_cache_miss(&self) {
+        let mut stats = self.inner.lock().await;
+        stats.record_cache_miss();
     }
 
     /// Get a list of resolvers sorted by response time (fastest first)
