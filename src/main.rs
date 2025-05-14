@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use slabigator::Slab;
 use std::fs;
 use std::net::SocketAddr;
-use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +12,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 
-// Include our modules
 mod allowed_zones;
 mod cache;
 mod control;
@@ -40,6 +38,9 @@ use probe::probe_server;
 use query_manager::QueryManager;
 use stats::SharedStats;
 
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
 #[macro_use]
 extern crate bpf;
 
@@ -745,30 +746,33 @@ impl ClientQuery {
         })?;
 
         // Create a new UDP socket for the upstream connection
-        let upstream_socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
+        let mut upstream_socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
             DnsError::UpstreamError(format!(
                 "Failed to bind socket for upstream connection: {e}"
             ))
         })?;
-        let upstream_socket_std = upstream_socket.into_std().map_err(|e| {
-            DnsError::UpstreamError(format!(
-                "Failed to convert upstream socket to standard: {e}"
-            ))
-        })?;
-        let upstream_socket_fd = upstream_socket_std.as_raw_fd();
-        let filter = bpfprog!(8,72 0 0 4,53 0 5 17,72 0 0 12,21 0 3 1,72 0 0 18,37 1 0 1,6 0 0 262144,6 0 0 0);
-        bpf::attach_filter(upstream_socket_fd, filter).ok();
-
-        upstream_socket_std.set_nonblocking(true).map_err(|e| {
-            DnsError::UpstreamError(format!(
-                "Failed to set upstream socket to non-blocking: {e}"
-            ))
-        })?;
-        let upstream_socket = UdpSocket::from_std(upstream_socket_std).map_err(|e| {
-            DnsError::UpstreamError(format!(
-                "Failed to convert standard socket back to UDP: {e}"
-            ))
-        })?;
+        _ = &mut upstream_socket;
+        #[cfg(target_os = "linux")]
+        {
+            let upstream_socket_std = upstream_socket.into_std().map_err(|e| {
+                DnsError::UpstreamError(format!(
+                    "Failed to convert upstream socket to standard: {e}"
+                ))
+            })?;
+            let upstream_socket_fd = upstream_socket_std.as_raw_fd();
+            let filter = bpfprog!(8,72 0 0 4,53 0 5 17,72 0 0 12,21 0 3 1,72 0 0 18,37 1 0 1,6 0 0 262144,6 0 0 0);
+            bpf::attach_filter(upstream_socket_fd, filter).ok();
+            upstream_socket_std.set_nonblocking(true).map_err(|e| {
+                DnsError::UpstreamError(format!(
+                    "Failed to set upstream socket to non-blocking: {e}"
+                ))
+            })?;
+            upstream_socket = UdpSocket::from_std(upstream_socket_std).map_err(|e| {
+                DnsError::UpstreamError(format!(
+                    "Failed to convert standard socket back to UDP: {e}"
+                ))
+            })?;
+        }
         upstream_socket.set_tos(0x10).ok();
 
         // If we get here, the packet is valid
