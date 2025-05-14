@@ -61,14 +61,14 @@ pub async fn select_upstream_server<'a>(
     match strategy {
         LoadBalancingStrategy::Random => {
             // Use a simple random index
-            let index = rand::thread_rng().gen_range(0..upstream_servers.len());
+            let index = rand::rng().random_range(0..upstream_servers.len());
             Some(&upstream_servers[index])
         }
         LoadBalancingStrategy::Fastest => {
             // If we don't have stats, fall back to random
             if stats.is_none() {
                 debug!("No stats available for fastest strategy, falling back to random");
-                let index = rand::thread_rng().gen_range(0..upstream_servers.len());
+                let index = rand::rng().random_range(0..upstream_servers.len());
                 return Some(&upstream_servers[index]);
             }
 
@@ -78,7 +78,7 @@ pub async fn select_upstream_server<'a>(
             // If we don't have any stats yet, fall back to random
             if resolvers_by_speed.is_empty() {
                 debug!("No resolver stats available yet, falling back to random");
-                let index = rand::thread_rng().gen_range(0..upstream_servers.len());
+                let index = rand::rng().random_range(0..upstream_servers.len());
                 return Some(&upstream_servers[index]);
             }
 
@@ -93,7 +93,7 @@ pub async fn select_upstream_server<'a>(
 
             // If none of the resolvers in our stats are in upstream_servers, fall back to random
             debug!("No matching resolver found in stats, falling back to random");
-            let index = rand::thread_rng().gen_range(0..upstream_servers.len());
+            let index = rand::rng().random_range(0..upstream_servers.len());
             Some(&upstream_servers[index])
         }
         LoadBalancingStrategy::PowerOfTwo => {
@@ -102,7 +102,7 @@ pub async fn select_upstream_server<'a>(
                 debug!(
                     "No stats available for p2 strategy or fewer than 2 servers, falling back to random"
                 );
-                let index = rand::thread_rng().gen_range(0..upstream_servers.len());
+                let index = rand::rng().random_range(0..upstream_servers.len());
                 return Some(&upstream_servers[index]);
             }
 
@@ -114,7 +114,7 @@ pub async fn select_upstream_server<'a>(
             // If we don't have any stats yet, fall back to random
             if resolvers_by_speed.is_empty() {
                 debug!("No resolver stats available yet, falling back to random");
-                let index = rand::thread_rng().gen_range(0..upstream_servers.len());
+                let index = rand::rng().random_range(0..upstream_servers.len());
                 return Some(&upstream_servers[index]);
             }
 
@@ -168,7 +168,7 @@ pub async fn select_upstream_server<'a>(
             // If we have no eligible servers, fall back to random selection from all servers
             if eligible_servers.is_empty() {
                 debug!("No eligible servers found, falling back to random selection");
-                let index = rand::thread_rng().gen_range(0..upstream_servers.len());
+                let index = rand::rng().random_range(0..upstream_servers.len());
                 return Some(&upstream_servers[index]);
             }
 
@@ -182,14 +182,14 @@ pub async fn select_upstream_server<'a>(
             let global_stats = stats.get_stats().await;
 
             // We have at least two eligible servers, choose two randomly and pick the faster one
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
 
             // To ensure we get a good distribution, we'll use a different approach
             // Shuffle the eligible servers and take the first two
             let mut indices: Vec<usize> = (0..eligible_servers.len()).collect();
 
             for i in 0..indices.len() {
-                let j = rng.gen_range(0..indices.len());
+                let j = rng.random_range(0..indices.len());
                 indices.swap(i, j);
             }
 
@@ -251,7 +251,7 @@ pub async fn select_upstream_server<'a>(
                 (None, None) => {
                     // If we don't have stats for either server, choose randomly
                     debug!("No stats for either server, choosing randomly");
-                    let index = rng.gen_range(0..2);
+                    let index = rng.random_range(0..2);
                     if index == 0 {
                         Some(server1)
                     } else {
