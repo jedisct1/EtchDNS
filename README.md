@@ -43,7 +43,8 @@ EtchDNS is a high-performance caching DNS proxy designed for security and reliab
 - **Efficient Caching**: Uses the SIEVE algorithm for optimal memory usage
 - **Query Aggregation**: Eliminates duplicate in-flight queries to reduce upstream load
 - **Smart Load Balancing**: Multiple strategies (fastest/p2/random) to distribute queries 
-- **Protocol Support**: UDP/TCP (standard DNS) and DoH (DNS-over-HTTP)
+- **Protocol Support**: UDP/TCP (standard DNS) and basic DoH (DNS-over-HTTP)
+- **Planned Protocols**: DNSCrypt and Anonymized DNSCrypt for improved security and privacy
 
 ### 🔒 Security
 - **Domain Filtering**: Whitelist and blacklist support with allowed/NX zones
@@ -316,6 +317,14 @@ For other languages, consult their respective WebAssembly compilation guides. Th
 ## License
 
 This project is licensed under the MIT License.
+
+---
+
+## Future Plans
+
+- **Modern Protocol Support**: Future versions may include support for DNSCrypt and Anonymized DNS, potentially porting functionality from the [encrypted-dns-server](https://github.com/DNSCrypt/encrypted-dns-server) project.
+
+> **Note**: Current DoH support is limited to traditional DoH, not Oblivious DoH (ODoH). For a mature, battle-tested DoH server implementation, consider [doh-server](https://github.com/DNSCrypt/doh-server) instead.
 
 ---
 
