@@ -65,6 +65,7 @@ Server health is continuously monitored with periodic probes to track performanc
 - **Rate Limiting**: Configurable per protocol (UDP, TCP, DoH) with protection against memory exhaustion
 - **Request Validation**: Thorough validation of DNS packets
 - **Transaction ID Masking**: Protection against DNS poisoning attacks
+- **Privilege Dropping**: Ability to drop privileges after binding to ports, with configurable user, group, and chroot environment
 
 ### Reliability
 
@@ -169,6 +170,11 @@ query_log_include_query_type = true
 
 # WebAssembly hooks (optional)
 hooks_wasm_file = "hooks.wasm"
+
+# Privilege dropping (optional, recommended for security)
+user = "nobody"       # Username to drop privileges to after binding
+group = "nogroup"     # Group to drop privileges to (optional)
+chroot = "/var/empty" # Directory to chroot to (optional)
 ```
 
 ## Domain Filtering
@@ -242,6 +248,9 @@ For optimal performance, consider these configuration guidelines:
 ## Security Considerations
 
 - Run EtchDNS with minimal privileges
+  - Use the privilege dropping feature to run as a non-root user after binding to ports
+  - Configure the `user`, `group`, and `chroot` settings in the configuration file
+  - Example: Start as root to bind to port 53, then drop to `nobody:nogroup` in a chroot environment
 - Use domain filtering to restrict which DNS queries are processed
 - Set appropriate rate limits to prevent abuse
 - Consider running behind a reverse proxy for DoH with TLS termination
