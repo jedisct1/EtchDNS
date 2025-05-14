@@ -93,9 +93,16 @@ impl QueryLogger {
             }
         }
 
-        // Add client address if enabled
+        // Add client address if enabled (IP only, without port)
         if include_client_addr {
-            log_line.push_str(&format!("{client_addr} "));
+            // Extract just the IP address part without the port
+            let client_ip = if let Ok(socket_addr) = client_addr.parse::<std::net::SocketAddr>() {
+                socket_addr.ip().to_string()
+            } else {
+                // Fallback if parsing fails
+                client_addr.to_string()
+            };
+            log_line.push_str(&format!("{client_ip} "));
         }
 
         // Always include the domain name
