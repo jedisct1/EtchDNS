@@ -26,6 +26,7 @@ mod load_balancer;
 mod metrics;
 mod nx_zones;
 mod probe;
+mod query_logger;
 mod query_manager_new;
 mod rate_limiter;
 mod resolver;
@@ -34,6 +35,7 @@ mod stats;
 // Use our error types
 use errors::{DnsError, EtchDnsError, EtchDnsResult};
 use probe::probe_server;
+use query_logger::QueryLogger;
 use query_manager_new::QueryManager;
 use stats::SharedStats;
 
@@ -193,6 +195,27 @@ struct Config {
     #[serde(default, skip)]
     #[cfg(not(feature = "hooks"))]
     hooks_wasm_file: Option<String>,
+
+    /// Path to a file to log DNS queries to
+    /// If not set, query logging is disabled
+    #[serde(default)]
+    query_log_file: Option<String>,
+
+    /// Whether to include timestamp in query log
+    #[serde(default = "default_query_log_include_timestamp")]
+    query_log_include_timestamp: bool,
+
+    /// Whether to include client address in query log
+    #[serde(default = "default_query_log_include_client_addr")]
+    query_log_include_client_addr: bool,
+
+    /// Whether to include query type in query log
+    #[serde(default = "default_query_log_include_query_type")]
+    query_log_include_query_type: bool,
+
+    /// Whether to include query class in query log
+    #[serde(default = "default_query_log_include_query_class")]
+    query_log_include_query_class: bool,
 }
 
 // Default values for configuration
@@ -301,11 +324,27 @@ fn default_doh_rate_limit_max_clients() -> usize {
 }
 
 fn default_log_level() -> String {
-    "warn".to_string() // Default log level is WARN
+    "info".to_string() // Default log level is INFO
 }
 
 fn default_negative_cache_ttl() -> u32 {
     1 // Default TTL for negative responses is 1 second
+}
+
+fn default_query_log_include_timestamp() -> bool {
+    true // Include timestamp in query log by default
+}
+
+fn default_query_log_include_client_addr() -> bool {
+    true // Include client address in query log by default
+}
+
+fn default_query_log_include_query_type() -> bool {
+    true // Include query type in query log by default
+}
+
+fn default_query_log_include_query_class() -> bool {
+    false // Don't include query class in query log by default
 }
 
 impl Config {
@@ -1316,10 +1355,10 @@ impl Client for TCPClient {
             self.query.load_balancing_strategy,
         );
 
-        // Submit the query to the query manager
+        // Submit the query to the query manager with client address
         match self
             .query_manager
-            .submit_query(dns_key, query_data, resolver)
+            .submit_query_with_client(dns_key, query_data, resolver, &self.addr.to_string())
             .await
         {
             Ok(mut receiver) => {
@@ -1417,10 +1456,10 @@ impl Client for UDPClient {
             self.query.load_balancing_strategy,
         );
 
-        // Submit the query to the query manager
+        // Submit the query to the query manager with client address
         match self
             .query_manager
-            .submit_query(dns_key, query_data, resolver)
+            .submit_query_with_client(dns_key, query_data, resolver, &self.addr.to_string())
             .await
         {
             Ok(mut receiver) => {
@@ -1527,7 +1566,80 @@ async fn main() -> EtchDnsResult<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&log_level)).init();
 
     debug!("Command line arguments: {:?}", args);
-    info!("Loaded configuration: {:?}", config);
+    debug!("Loaded configuration: {:?}", config);
+
+    // Log startup information at INFO level
+    info!("Starting EtchDNS server");
+    info!("Log level: {}", config.log_level);
+
+    // Log listening addresses
+    for addr in &config.listen_addresses {
+        info!("Listening on: {} (UDP/TCP)", addr);
+    }
+
+    // Log DoH addresses if configured
+    if !config.doh_listen_addresses.is_empty() {
+        for addr in &config.doh_listen_addresses {
+            info!("Listening on: {} (DoH)", addr);
+        }
+    } else {
+        info!("DoH server is disabled");
+    }
+
+    // Log metrics server if configured
+    if let Some(addr) = &config.metrics_address {
+        info!(
+            "Metrics server enabled on: {}, path: {}",
+            addr, config.metrics_path
+        );
+    } else {
+        info!("Metrics server is disabled");
+    }
+
+    // Log cache information
+    info!("DNS cache size: {} entries", config.cache_size);
+
+    // Log load balancing strategy
+    info!(
+        "Load balancing strategy: {}",
+        config.load_balancing_strategy
+    );
+
+    // Log domain filtering information
+    if let Some(file) = &config.allowed_zones_file {
+        info!("Domain filtering enabled with allowed zones file: {}", file);
+    }
+
+    // Log NX domains information
+    if let Some(file) = &config.nx_zones_file {
+        info!("NX domains filtering enabled with file: {}", file);
+    }
+
+    // Log rate limiting information
+    if config.udp_rate_limit_window > 0 {
+        info!(
+            "UDP rate limiting: {} queries per {} seconds",
+            config.udp_rate_limit_count, config.udp_rate_limit_window
+        );
+    } else {
+        info!("UDP rate limiting is disabled");
+    }
+
+    if config.tcp_rate_limit_window > 0 {
+        info!(
+            "TCP rate limiting: {} queries per {} seconds",
+            config.tcp_rate_limit_count, config.tcp_rate_limit_window
+        );
+    } else {
+        info!("TCP rate limiting is disabled");
+    }
+
+    if !config.doh_listen_addresses.is_empty() && config.doh_rate_limit_window > 0 {
+        info!(
+            "DoH rate limiting: {} queries per {} seconds",
+            config.doh_rate_limit_count, config.doh_rate_limit_window
+        );
+    }
 
     // Get the socket addresses to bind to
     let socket_addrs = config.socket_addrs()?;
@@ -1594,6 +1706,19 @@ async fn main() -> EtchDnsResult<()> {
     // Create a Hooks structure
     let mut hooks = Arc::new(hooks::SharedHooks::new());
     debug!("Created hooks structure");
+
+    // Create a query logger if configured
+    let query_logger = Arc::new(query_logger::QueryLogger::new(
+        config.query_log_file.clone(),
+        config.query_log_include_timestamp,
+        config.query_log_include_client_addr,
+        config.query_log_include_query_type,
+        config.query_log_include_query_class,
+    ));
+
+    if let Some(log_file) = &config.query_log_file {
+        info!("Query logging enabled to file: {}", log_file);
+    }
 
     // Load WebAssembly hooks if specified and hooks feature is enabled
     if let Some(wasm_file) = &config.hooks_wasm_file {
@@ -1709,6 +1834,9 @@ async fn main() -> EtchDnsResult<()> {
 
     // Set the hooks in the query manager
     query_manager.set_hooks(hooks.clone());
+
+    // Set the query logger in the query manager
+    query_manager.set_query_logger(query_logger.clone());
 
     // Load allowed zones if configured
     if let Some(allowed_zones_file) = &config.allowed_zones_file {

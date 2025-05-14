@@ -28,6 +28,7 @@ async fn handle_doh_request(
     dns_packet_len_max: usize,
     stats: Arc<SharedStats>,
     load_balancing_strategy: crate::load_balancer::LoadBalancingStrategy,
+    client_addr: SocketAddr,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     // Check the request method
     match *req.method() {
@@ -59,6 +60,7 @@ async fn handle_doh_request(
                                 dns_packet_len_max,
                                 stats,
                                 load_balancing_strategy,
+                                &client_addr,
                             )
                             .await
                         }
@@ -105,6 +107,7 @@ async fn handle_doh_request(
                             dns_packet_len_max,
                             stats,
                             load_balancing_strategy,
+                            &client_addr,
                         )
                         .await
                     }
@@ -146,6 +149,7 @@ async fn process_dns_message(
     dns_packet_len_max: usize,
     stats: Arc<SharedStats>,
     load_balancing_strategy: crate::load_balancer::LoadBalancingStrategy,
+    client_addr: &SocketAddr,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     // Validate the packet and create a DNSKey
     let dns_key = match dns_processor::validate_and_create_key(&dns_message, "DoH client") {
@@ -169,9 +173,9 @@ async fn process_dns_message(
         load_balancing_strategy,
     );
 
-    // Submit the query to the query manager
+    // Submit the query to the query manager with client address
     match query_manager
-        .submit_query(dns_key, query_data, resolver)
+        .submit_query_with_client(dns_key, query_data, resolver, &client_addr.to_string())
         .await
     {
         Ok(mut receiver) => {
@@ -279,11 +283,13 @@ pub async fn start_doh_server(
             debug!("Accepted DoH connection from {}", client_addr);
 
             // Handle the connection
+            let client_addr_clone = client_addr.clone();
             let service = hyper::service::service_fn(move |req| {
                 let query_manager = query_manager.clone();
                 let upstream_servers = upstream_servers.clone();
                 let stats = stats.clone();
                 let load_balancing_strategy = load_balancing_strategy;
+                let client_addr = client_addr_clone;
 
                 async move {
                     handle_doh_request(
@@ -294,6 +300,7 @@ pub async fn start_doh_server(
                         dns_packet_len_max,
                         stats,
                         load_balancing_strategy,
+                        client_addr,
                     )
                     .await
                 }

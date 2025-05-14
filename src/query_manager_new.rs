@@ -74,6 +74,9 @@ pub struct QueryManager {
 
     /// Hooks for customizing DNS query processing
     hooks: Option<Arc<crate::hooks::SharedHooks>>,
+
+    /// Query logger for logging DNS queries to a file
+    query_logger: Option<Arc<crate::query_logger::QueryLogger>>,
 }
 
 /// Represents a task handling a DNS query
@@ -123,7 +126,8 @@ impl QueryManager {
             serve_stale_grace_time,
             serve_stale_ttl,
             negative_cache_ttl,
-            hooks: None, // Initialize hooks as None, will be set later if needed
+            hooks: None,        // Initialize hooks as None, will be set later if needed
+            query_logger: None, // Initialize query_logger as None, will be set later if needed
         }
     }
 
@@ -152,6 +156,11 @@ impl QueryManager {
         self.hooks = Some(hooks);
     }
 
+    /// Set the query logger
+    pub fn set_query_logger(&mut self, query_logger: Arc<crate::query_logger::QueryLogger>) {
+        self.query_logger = Some(query_logger);
+    }
+
     /// Get the statistics tracker
     pub fn get_stats(&self) -> Option<Arc<crate::stats::SharedStats>> {
         self.stats.clone()
@@ -162,12 +171,57 @@ impl QueryManager {
         self.hooks.clone()
     }
 
+    /// Submit a query with client address and get a receiver for the response
+    ///
+    /// If the query is already in flight, this will add a new receiver to the existing query.
+    /// If the query is not in flight, this will create a new task to handle the query.
+    /// If the maximum number of in-flight queries has been reached, this will return an error.
+    pub async fn submit_query_with_client(
+        &self,
+        key: DNSKey,
+        query_data: Vec<u8>,
+        resolver: impl Fn(Vec<u8>) -> futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+        + Send
+        + Sync
+        + 'static,
+        client_addr: &str,
+    ) -> EtchDnsResult<broadcast::Receiver<DnsResponse>> {
+        // Log the query if query logging is enabled
+        if let Some(query_logger) = &self.query_logger {
+            let _ = query_logger.log_query(&key, client_addr).await;
+        }
+
+        // Call the regular submit_query implementation
+        self.submit_query_internal(key, query_data, resolver).await
+    }
+
     /// Submit a query and get a receiver for the response
     ///
     /// If the query is already in flight, this will add a new receiver to the existing query.
     /// If the query is not in flight, this will create a new task to handle the query.
     /// If the maximum number of in-flight queries has been reached, this will return an error.
     pub async fn submit_query(
+        &self,
+        key: DNSKey,
+        query_data: Vec<u8>,
+        resolver: impl Fn(Vec<u8>) -> futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> EtchDnsResult<broadcast::Receiver<DnsResponse>> {
+        // Log the query if query logging is enabled
+        if let Some(query_logger) = &self.query_logger {
+            // Use a fake client address if not available
+            let client_addr = "unknown";
+            let _ = query_logger.log_query(&key, client_addr).await;
+        }
+
+        // Call the internal implementation
+        self.submit_query_internal(key, query_data, resolver).await
+    }
+
+    /// Internal implementation of submit_query
+    async fn submit_query_internal(
         &self,
         key: DNSKey,
         query_data: Vec<u8>,

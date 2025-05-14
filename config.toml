@@ -5,7 +5,7 @@
 #------------------------------------------------------------------------------
 
 # Log level (trace, debug, info, warn, error, default: warn)
-log_level = "warn"
+log_level = "info"
 
 # Addresses to listen on (array of "ip:port" strings, default: ["0.0.0.0:10000"])
 # Standard DNS port is 53, but requires root privileges
@@ -165,6 +165,27 @@ metrics_path = "/metrics"
 # Maximum number of concurrent connections to the HTTP metrics server (default: 5)
 # Increase for better handling of metric scraping
 max_metrics_connections = 20
+
+#------------------------------------------------------------------------------
+# Logging Configuration
+#------------------------------------------------------------------------------
+
+# Path to a file to log DNS queries to
+# If not set, query logging is disabled
+# Uncomment to enable query logging
+# query_log_file = "queries.log"
+
+# Whether to include timestamp in query log (default: true)
+query_log_include_timestamp = true
+
+# Whether to include client address in query log (default: true)
+query_log_include_client_addr = true
+
+# Whether to include query type in query log (default: true)
+query_log_include_query_type = true
+
+# Whether to include query class in query log (default: false)
+query_log_include_query_class = false
 
 #------------------------------------------------------------------------------
 # Extensions
