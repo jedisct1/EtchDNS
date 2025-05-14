@@ -35,6 +35,10 @@ pub enum EtchDnsError {
     #[allow(dead_code)]
     ClientError(String),
 
+    /// Error occurred while dropping privileges
+    #[error("Failed to drop privileges: {0}")]
+    PrivilegeDropError(String),
+
     /// Other errors
     #[error("Other error: {0}")]
     Other(String),

@@ -215,6 +215,21 @@ struct Config {
     /// Whether to include query class in query log
     #[serde(default = "default_query_log_include_query_class")]
     query_log_include_query_class: bool,
+
+    /// Username to drop privileges to after binding to sockets
+    /// If not set, privileges will not be dropped
+    #[serde(default)]
+    user: Option<String>,
+
+    /// Group to drop privileges to after binding to sockets
+    /// If not set, the primary group of the user will be used
+    #[serde(default)]
+    group: Option<String>,
+
+    /// Directory to chroot to after binding to sockets
+    /// If not set, chroot will not be performed
+    #[serde(default)]
+    chroot: Option<String>,
 }
 
 // Default values for configuration
@@ -463,6 +478,24 @@ impl Config {
             return Err(EtchDnsError::Other(
                 "Invalid doh_rate_limit_max_clients: must be greater than 0 when rate limiting is enabled".to_string(),
             ));
+        }
+
+        // Validate privilege dropping parameters
+        if let Some(chroot_dir) = &self.chroot {
+            // Check if the chroot directory exists
+            if !std::path::Path::new(chroot_dir).exists() {
+                return Err(EtchDnsError::Other(format!(
+                    "Chroot directory '{}' does not exist",
+                    chroot_dir
+                )));
+            }
+
+            // If user is not set but chroot is, that's an error
+            if self.user.is_none() {
+                return Err(EtchDnsError::Other(
+                    "User must be specified when chroot is enabled".to_string(),
+                ));
+            }
         }
 
         Ok(())
@@ -1870,6 +1903,45 @@ async fn main() -> EtchDnsResult<()> {
         "Created query manager with a maximum of {} in-flight queries, {} second timeout, {} byte packet size, and '{}' load balancing strategy",
         max_inflight_queries, server_timeout, dns_packet_len_max, load_balancing_strategy
     );
+
+    // Drop privileges if configured
+    if let Some(username) = &config.user {
+        info!("Dropping privileges to user: {}", username);
+
+        // Create a new privdrop instance
+        let pd = privdrop::PrivDrop::default();
+
+        // Build the privilege drop configuration
+        let mut pd = pd.user(username);
+
+        // Set the group if specified
+        if let Some(group) = &config.group {
+            info!("Using group: {}", group);
+            pd = pd.group(group);
+        }
+
+        // Set chroot if specified
+        if let Some(chroot_dir) = &config.chroot {
+            info!("Using chroot directory: {}", chroot_dir);
+            pd = pd.chroot(chroot_dir);
+        }
+
+        // Apply the privilege drop
+        match pd.apply() {
+            Ok(_) => {
+                info!("Successfully dropped privileges");
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to drop privileges: {}", e);
+                error!("{}", error_msg);
+                return Err(EtchDnsError::PrivilegeDropError(error_msg));
+            }
+        }
+    } else {
+        warn!(
+            "Running with full privileges. Consider setting 'user' in config.toml for better security."
+        );
+    }
 
     // Create a vector of tasks
     let mut tasks = Vec::new();

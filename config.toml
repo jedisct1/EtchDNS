@@ -195,3 +195,22 @@ query_log_include_query_class = false
 # If set, the hooks will be loaded from this file
 # Uncomment to enable WebAssembly hooks
 # hooks_wasm_file = "hooks.wasm"
+
+#------------------------------------------------------------------------------
+# Security Configuration
+#------------------------------------------------------------------------------
+
+# Username to drop privileges to after binding to sockets
+# If not set, privileges will not be dropped
+# Uncomment to enable privilege dropping
+# user = "nobody"
+
+# Group to drop privileges to after binding to sockets
+# If not set, the primary group of the user will be used
+# Uncomment to enable privilege dropping to a specific group
+# group = "nogroup"
+
+# Directory to chroot to after binding to sockets
+# If not set, chroot will not be performed
+# Uncomment to enable chroot (ensure the directory exists and is properly set up)
+# chroot = "/var/empty"
