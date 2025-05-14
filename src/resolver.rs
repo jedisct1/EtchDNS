@@ -32,25 +32,31 @@ pub fn create_resolver(
     stats: Option<Arc<SharedStats>>,
     load_balancing_strategy: LoadBalancingStrategy,
 ) -> impl Fn(Vec<u8>) -> BoxFuture<'static, DnsResult<Vec<u8>>> + Send + Sync + 'static {
+    // Create Arc wrappers outside the closure to avoid cloning on each call
+    let upstream_servers_arc = Arc::new(upstream_servers);
+    let stats_arc = stats.map(|s| Arc::clone(&s));
+
     move |data: Vec<u8>| {
+        // Clone the Arc, not the inner data
+        let upstream_servers_ref = Arc::clone(&upstream_servers_arc);
+
         // Create a new client query with stats if available
-        let client_query = match stats.clone() {
+        let client_query = match &stats_arc {
             Some(stats) => ClientQuery::new(
                 data,
-                upstream_servers.clone(),
+                (*upstream_servers_ref).clone(),
                 server_timeout,
                 dns_packet_len_max,
-                stats,
+                Arc::clone(stats),
                 load_balancing_strategy,
             ),
             None => {
                 // This should not happen in normal operation
                 warn!("No stats available for resolver function");
                 // Create a dummy query without stats
-
                 ClientQuery {
                     data,
-                    upstream_servers: upstream_servers.clone(),
+                    upstream_servers: (*upstream_servers_ref).clone(),
                     server_timeout,
                     dns_packet_len_max,
                     max_udp_response_size: dns_parser::DNS_MAX_UDP_PACKET_SIZE,
@@ -59,6 +65,7 @@ pub fn create_resolver(
                 }
             }
         };
+
         Box::pin(async move {
             match client_query.process().await {
                 Ok(data) => Ok(data),

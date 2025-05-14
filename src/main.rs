@@ -656,9 +656,10 @@ impl ClientQuery {
                 // Record the successful response in stats if available
                 if let Some(stats) = &self.stats {
                     if let Ok(addr) = upstream_addr.to_string().parse() {
-                        let stats_clone = stats.clone();
+                        // Use a reference to avoid cloning
+                        let stats_ref = Arc::clone(stats);
                         tokio::spawn(async move {
-                            stats_clone.record_success(addr, response_time).await;
+                            stats_ref.record_success(addr, response_time).await;
                         });
                     }
                 }
@@ -676,9 +677,10 @@ impl ClientQuery {
                 // Record the failure in stats if available
                 if let Some(stats) = &self.stats {
                     if let Ok(addr) = upstream_addr.to_string().parse() {
-                        let stats_clone = stats.clone();
+                        // Use a reference to avoid cloning
+                        let stats_ref = Arc::clone(stats);
                         tokio::spawn(async move {
-                            stats_clone.record_failure(addr).await;
+                            stats_ref.record_failure(addr).await;
                         });
                     }
                 }
@@ -699,9 +701,10 @@ impl ClientQuery {
                 // Record the timeout in stats if available
                 if let Some(stats) = &self.stats {
                     if let Ok(addr) = upstream_addr.to_string().parse() {
-                        let stats_clone = stats.clone();
+                        // Use a reference to avoid cloning
+                        let stats_ref = Arc::clone(stats);
                         tokio::spawn(async move {
-                            stats_clone.record_timeout(addr).await;
+                            stats_ref.record_timeout(addr).await;
                         });
                     }
                 }
@@ -760,9 +763,10 @@ impl ClientQuery {
                         // Record the timeout in stats if available
                         if let Some(stats) = &self.stats {
                             if let Ok(addr) = upstream_addr.to_string().parse() {
-                                let stats_clone = stats.clone();
+                                // Use a reference to avoid cloning
+                                let stats_ref = Arc::clone(stats);
                                 tokio::spawn(async move {
-                                    stats_clone.record_timeout(addr).await;
+                                    stats_ref.record_timeout(addr).await;
                                 });
                             }
                         }
@@ -785,19 +789,18 @@ impl ClientQuery {
         }
 
         // Use the load balancer to select a server
-        let server = load_balancer::select_upstream_server(
+        load_balancer::select_upstream_server(
             upstream_servers,
             self.load_balancing_strategy,
             self.stats.as_ref(),
         )
         .await
+        .map(|s| s.to_string()) // Convert &String to String
         .ok_or_else(|| {
             EtchDnsError::DnsProcessingError(DnsError::UpstreamError(
                 "Failed to select upstream server".to_string(),
             ))
-        })?;
-
-        Ok(server.clone())
+        })
     }
 }
 
@@ -1329,35 +1332,45 @@ async fn process_tcp_connection(
     debug!("TCP connection handler for client {} exiting", addr);
 }
 
-#[async_trait]
-impl Client for TCPClient {
-    async fn process_query(&self) {
+/// Common functionality for processing DNS queries
+trait DnsQueryProcessor {
+    /// Process a DNS query and get a response
+    async fn process_dns_query(
+        &self,
+        query_data: &[u8],
+        client_addr: &str,
+        protocol: &str,
+        query_manager: &Arc<QueryManager>,
+        upstream_servers: &[String],
+        server_timeout: u64,
+        dns_packet_len_max: usize,
+        stats: Option<Arc<SharedStats>>,
+        load_balancing_strategy: load_balancer::LoadBalancingStrategy,
+    ) -> Option<(Vec<u8>, u16)> {
         // Log the received packet
-        dns_processor::log_received_packet(self.query.data.len(), &self.addr.to_string(), "TCP");
+        dns_processor::log_received_packet(query_data.len(), client_addr, protocol);
 
         // Validate the packet and create a DNSKey
-        let dns_key = match dns_processor::validate_and_create_key(
-            &self.query.data,
-            &self.addr.to_string(),
-        ) {
+        let dns_key = match dns_processor::validate_and_create_key(query_data, client_addr) {
             Ok(key) => key,
-            Err(_) => return, // Error already logged in validate_and_create_key
+            Err(_) => return None, // Error already logged in validate_and_create_key
         };
 
+        // Get the client query ID once to avoid multiple calls
+        let client_query_id = dns_parser::tid(query_data);
+
         // Create a resolver function for this query
-        let query_data = self.query.data.clone();
         let resolver = resolver::create_resolver(
-            self.query.upstream_servers.clone(),
-            self.query.server_timeout,
-            self.query.dns_packet_len_max,
-            self.query.stats.clone(),
-            self.query.load_balancing_strategy,
+            upstream_servers.to_vec(),
+            server_timeout,
+            dns_packet_len_max,
+            stats,
+            load_balancing_strategy,
         );
 
         // Submit the query to the query manager with client address
-        match self
-            .query_manager
-            .submit_query_with_client(dns_key, query_data, resolver, &self.addr.to_string())
+        match query_manager
+            .submit_query_with_client(dns_key, query_data.to_vec(), resolver, client_addr)
             .await
         {
             Ok(mut receiver) => {
@@ -1368,20 +1381,17 @@ impl Client for TCPClient {
                         if let Some(error_msg) = response.error {
                             // Log the error
                             error!("Error in DNS response: {}", error_msg);
-                            debug!("Not sending error response to client {}", self.addr);
-                            return;
+                            debug!("Not sending error response to client {}", client_addr);
+                            return None;
                         }
 
-                        // Create a copy of the response data
-                        let mut response_data = response.data.clone();
-
-                        // Get the original query ID from the client's query
-                        let client_query_id = dns_parser::tid(&self.query.data);
+                        // Get the response data (no need to clone as we own it)
+                        let mut response_data = response.data;
 
                         // Replace the query ID in the response with the client's query ID
                         if let Err(e) = dns_parser::set_tid(&mut response_data, client_query_id) {
                             error!("Failed to set transaction ID in response: {}", e);
-                            return;
+                            return None;
                         } else {
                             debug!(
                                 "Replaced response transaction ID with client query ID: {}",
@@ -1389,42 +1399,70 @@ impl Client for TCPClient {
                             );
                         }
 
-                        // For TCP, we need to prepend the 2-byte length field
-                        let response_len = response_data.len() as u16;
-                        let mut tcp_response = Vec::with_capacity(response_data.len() + 2);
-                        tcp_response.push((response_len >> 8) as u8);
-                        tcp_response.push(response_len as u8);
-                        tcp_response.extend_from_slice(&response_data);
-
-                        // Send the response back to the client
-                        let mut stream = self.stream.lock().await;
-                        match stream.write_all(&tcp_response).await {
-                            Ok(_) => {
-                                debug!(
-                                    "Sent {} bytes back to TCP client {}",
-                                    response_data.len(),
-                                    self.addr
-                                );
-                                debug!("Response successfully sent to client {}", self.addr);
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed to send response to TCP client {}: {}",
-                                    self.addr, e
-                                );
-                                debug!("Error details: {:?}", e);
-                            }
-                        }
+                        // Return the response data and client query ID
+                        Some((response_data, client_query_id))
                     }
                     Err(e) => {
                         error!("Failed to receive response from query manager: {}", e);
                         debug!("Error details: {:?}", e);
+                        None
                     }
                 }
             }
             Err(e) => {
                 error!("Failed to submit query to query manager: {}", e);
                 debug!("Error details: {:?}", e);
+                None
+            }
+        }
+    }
+}
+
+// Implement the DnsQueryProcessor trait for both client types
+impl DnsQueryProcessor for TCPClient {}
+impl DnsQueryProcessor for UDPClient {}
+
+#[async_trait]
+impl Client for TCPClient {
+    async fn process_query(&self) {
+        // Process the DNS query
+        let client_addr = self.addr.to_string();
+        if let Some((response_data, _)) = self
+            .process_dns_query(
+                &self.query.data,
+                &client_addr,
+                "TCP",
+                &self.query_manager,
+                &self.query.upstream_servers,
+                self.query.server_timeout,
+                self.query.dns_packet_len_max,
+                self.query.stats.clone(),
+                self.query.load_balancing_strategy,
+            )
+            .await
+        {
+            // For TCP, we need to prepend the 2-byte length field
+            let response_len = response_data.len() as u16;
+            let mut tcp_response = Vec::with_capacity(response_data.len() + 2);
+            tcp_response.push((response_len >> 8) as u8);
+            tcp_response.push(response_len as u8);
+            tcp_response.extend_from_slice(&response_data);
+
+            // Send the response back to the client
+            let mut stream = self.stream.lock().await;
+            match stream.write_all(&tcp_response).await {
+                Ok(_) => {
+                    debug!(
+                        "Sent {} bytes back to TCP client {}",
+                        response_data.len(),
+                        self.addr
+                    );
+                    debug!("Response successfully sent to client {}", self.addr);
+                }
+                Err(e) => {
+                    error!("Failed to send response to TCP client {}: {}", self.addr, e);
+                    debug!("Error details: {:?}", e);
+                }
             }
         }
     }
@@ -1433,120 +1471,62 @@ impl Client for TCPClient {
 #[async_trait]
 impl Client for UDPClient {
     async fn process_query(&self) {
-        // Log the received packet
-        dns_processor::log_received_packet(self.query.data.len(), &self.addr.to_string(), "UDP");
-
-        // Validate the packet and create a DNSKey
-        let dns_key = match dns_processor::validate_and_create_key(
-            &self.query.data,
-            &self.addr.to_string(),
-        ) {
-            Ok(key) => key,
-            Err(_) => return, // Error already logged in validate_and_create_key
-        };
-
-        // Create a resolver function for this query
-        let query_data = self.query.data.clone();
-        let resolver = resolver::create_resolver(
-            self.query.upstream_servers.clone(),
-            self.query.server_timeout,
-            self.query.dns_packet_len_max,
-            self.query.stats.clone(),
-            self.query.load_balancing_strategy,
-        );
-
-        // Submit the query to the query manager with client address
-        match self
-            .query_manager
-            .submit_query_with_client(dns_key, query_data, resolver, &self.addr.to_string())
+        // Process the DNS query
+        let client_addr = self.addr.to_string();
+        if let Some((mut response_data, _)) = self
+            .process_dns_query(
+                &self.query.data,
+                &client_addr,
+                "UDP",
+                &self.query_manager,
+                &self.query.upstream_servers,
+                self.query.server_timeout,
+                self.query.dns_packet_len_max,
+                self.query.stats.clone(),
+                self.query.load_balancing_strategy,
+            )
             .await
         {
-            Ok(mut receiver) => {
-                // Wait for the response
-                match receiver.recv().await {
-                    Ok(response) => {
-                        // Check if the response contains an error
-                        if let Some(error_msg) = response.error {
-                            // Log the error
-                            error!("Error in DNS response: {}", error_msg);
-                            debug!("Not sending error response to client {}", self.addr);
-                            return;
-                        }
+            // Check if the response exceeds the maximum UDP response size
+            if response_data.len() > self.query.max_udp_response_size {
+                debug!(
+                    "Response size ({} bytes) exceeds maximum UDP response size ({} bytes), truncating",
+                    response_data.len(),
+                    self.query.max_udp_response_size
+                );
 
-                        // Create a copy of the response data
-                        let mut response_data = response.data.clone();
-
-                        // Get the original query ID from the client's query
-                        let client_query_id = dns_parser::tid(&self.query.data);
-
-                        // Replace the query ID in the response with the client's query ID
-                        if let Err(e) = dns_parser::set_tid(&mut response_data, client_query_id) {
-                            error!("Failed to set transaction ID in response: {}", e);
-                            return;
-                        } else {
-                            debug!(
-                                "Replaced response transaction ID with client query ID: {}",
-                                client_query_id
-                            );
-                        }
-
-                        // Check if the response exceeds the maximum UDP response size
-                        if response_data.len() > self.query.max_udp_response_size {
-                            debug!(
-                                "Response size ({} bytes) exceeds maximum UDP response size ({} bytes), truncating",
-                                response_data.len(),
-                                self.query.max_udp_response_size
-                            );
-
-                            // Truncate the response
-                            match dns_parser::truncate_dns_packet(
-                                &response_data,
-                                Some(self.query.max_udp_response_size),
-                                false,
-                            ) {
-                                Ok(truncated_data) => {
-                                    debug!(
-                                        "Truncated response from {} bytes to {} bytes",
-                                        response_data.len(),
-                                        truncated_data.len()
-                                    );
-                                    response_data = truncated_data;
-                                }
-                                Err(e) => {
-                                    error!("Failed to truncate response: {}", e);
-                                    debug!("Error details: {:?}", e);
-                                    // Continue with the original response
-                                }
-                            }
-                        }
-
-                        // Send the response back to the client
-                        match self.socket.send_to(&response_data, self.addr).await {
-                            Ok(bytes_sent) => {
-                                debug!(
-                                    "Sent {} bytes back to UDP client {}",
-                                    bytes_sent, self.addr
-                                );
-                                debug!("Response successfully sent to client {}", self.addr);
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed to send response to UDP client {}: {}",
-                                    self.addr, e
-                                );
-                                debug!("Error details: {:?}", e);
-                            }
-                        }
+                // Truncate the response
+                match dns_parser::truncate_dns_packet(
+                    &response_data,
+                    Some(self.query.max_udp_response_size),
+                    false,
+                ) {
+                    Ok(truncated_data) => {
+                        debug!(
+                            "Truncated response from {} bytes to {} bytes",
+                            response_data.len(),
+                            truncated_data.len()
+                        );
+                        response_data = truncated_data;
                     }
                     Err(e) => {
-                        error!("Failed to receive response from query manager: {}", e);
+                        error!("Failed to truncate response: {}", e);
                         debug!("Error details: {:?}", e);
+                        // Continue with the original response
                     }
                 }
             }
-            Err(e) => {
-                error!("Failed to submit query to query manager: {}", e);
-                debug!("Error details: {:?}", e);
+
+            // Send the response back to the client
+            match self.socket.send_to(&response_data, self.addr).await {
+                Ok(bytes_sent) => {
+                    debug!("Sent {} bytes back to UDP client {}", bytes_sent, self.addr);
+                    debug!("Response successfully sent to client {}", self.addr);
+                }
+                Err(e) => {
+                    error!("Failed to send response to UDP client {}: {}", self.addr, e);
+                    debug!("Error details: {:?}", e);
+                }
             }
         }
     }
