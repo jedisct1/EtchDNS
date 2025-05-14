@@ -35,7 +35,7 @@ EtchDNS is a high-performance caching DNS proxy designed for security and reliab
 - Developers looking for an extensible DNS platform through WebAssembly
 - Secondary authoritative DNS server compatible with any provider (no zone transfer required)
 - Public or local DNS cache in front of a resolver
-- Intermediary between a [DNSCrypt server proxy](https://github.com/DNSCrypt/encrypted-dns-server) and a resolver
+- Intermediary between a DNSCrypt server proxy and a resolver
 
 ## Key Features
 
@@ -44,7 +44,7 @@ EtchDNS is a high-performance caching DNS proxy designed for security and reliab
 - **Query Aggregation**: Eliminates duplicate in-flight queries to reduce upstream load
 - **Smart Load Balancing**: Multiple strategies (fastest/p2/random) to distribute queries 
 - **Protocol Support**: UDP/TCP (standard DNS) and basic DoH (DNS-over-HTTP)
-- **Planned Protocols**: DNSCrypt and Anonymized DNSCrypt for improved security and privacy
+- **Planned Protocols**: DNSCrypt, PQDNSCrypt, and Anonymized DNSCrypt for improved security and privacy
 
 ### 🔒 Security
 - **Domain Filtering**: Whitelist and blacklist support with allowed/NX zones
@@ -115,7 +115,7 @@ nx_zones_file = "nx_zones.txt"
 
 Block malicious domains, ads, or unwanted content by configuring the `nx_zones.txt` file with domains that should return NXDOMAIN responses.
 
-EtchDNS can be used as an intermediary between a DNSCrypt server proxy (like https://github.com/DNSCrypt/encrypted-dns-server) and your resolver to reduce load and enhance reliability.
+EtchDNS can be used as an intermediary between a DNSCrypt server proxy (such as [encrypted-dns-server](https://github.com/DNSCrypt/encrypted-dns-server)) and your resolver to reduce load and enhance reliability.
 
 ### Custom DNS Processing with WebAssembly
 
@@ -325,9 +325,3 @@ This project is licensed under the MIT License.
 - **Modern Protocol Support**: Future versions may include support for DNSCrypt and Anonymized DNS, potentially porting functionality from the [encrypted-dns-server](https://github.com/DNSCrypt/encrypted-dns-server) project.
 
 > **Note**: Current DoH support is limited to traditional DoH, not Oblivious DoH (ODoH). For a mature, battle-tested DoH server implementation, consider [doh-server](https://github.com/DNSCrypt/doh-server) instead.
-
----
-
-<p align="center">
-  Made with ❤️ by the EtchDNS team
-</p>
