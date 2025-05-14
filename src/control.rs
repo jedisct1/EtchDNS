@@ -50,14 +50,14 @@ async fn handle_request(
                 error!("Failed to serialize API response: {}", e);
                 r#"{"success":false,"message":"Internal server error"}"#.to_string()
             });
-            
+
             let mut response = Response::new(Full::new(Bytes::from(json)));
             response.headers_mut().insert(
                 hyper::header::CONTENT_TYPE,
                 hyper::header::HeaderValue::from_static("application/json"),
             );
             Ok(response)
-        },
+        }
 
         // Any other endpoint
         _ => {
@@ -66,7 +66,7 @@ async fn handle_request(
                 message: "Endpoint not found".to_string(),
             };
             let json = serde_json::to_string(&response).unwrap();
-            
+
             let mut response = Response::new(Full::new(Bytes::from(json)));
             response.headers_mut().insert(
                 hyper::header::CONTENT_TYPE,
