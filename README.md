@@ -32,6 +32,7 @@ EtchDNS is a high-performance caching DNS proxy designed for security and reliab
 - Network administrators needing protection against DNS-based attacks
 - Service providers looking to offload DNS traffic from primary servers
 - Privacy-conscious users wanting greater control over their DNS resolution
+- Developers looking for an extensible DNS platform through WebAssembly
 
 ## Key Features
 
@@ -59,9 +60,11 @@ EtchDNS is a high-performance caching DNS proxy designed for security and reliab
 - **Remote Control API**: HTTP interface for status monitoring and cache management
 - **Detailed Logging**: Configurable query logging with customizable details
 
-### 🧩 Extensibility
-- **WebAssembly Hooks**: Extend functionality through custom WASM modules
-- **Modular Architecture**: Clean component separation for easy maintenance
+### 🧩 Extensibility (WebAssembly)
+- **Multi-language Plugin Support**: Create custom plugins in any language that compiles to WebAssembly (C/C++, Zig, AssemblyScript, etc.)
+- **Custom Filter Rules**: Implement advanced filtering logic beyond static blocklists
+- **Dynamic Response Modification**: Modify DNS responses based on custom business logic
+- **Stateful Processing**: Maintain state across DNS queries for complex policy enforcement
 
 ## Quickstart
 
@@ -107,6 +110,17 @@ nx_zones_file = "nx_zones.txt"
 ```
 
 Block malicious domains, ads, or unwanted content by configuring the `nx_zones.txt` file with domains that should return NXDOMAIN responses.
+
+### Custom DNS Processing with WebAssembly
+
+Implement advanced DNS processing logic:
+
+```toml
+# WebAssembly hooks
+hooks_wasm_file = "hooks.wasm"
+```
+
+Use WebAssembly to implement custom filtering rules, monitoring, or modifications to DNS queries and responses.
 
 ## Installation
 
@@ -186,16 +200,45 @@ Available endpoints:
 - `POST /control/cache/clear`: Clear entire cache
 - `POST /control/cache/clear/zone`: Clear specific zone
 
-### WebAssembly Extensions
+### WebAssembly Extensions (Beta)
 
-Extend EtchDNS with custom WebAssembly modules:
+> **Note**: The WebAssembly extension system is currently in beta and under active development. While functional, expect API changes and additional features in future releases.
+
+One of EtchDNS's most powerful features is its ability to be extended through WebAssembly modules. This allows you to implement custom DNS processing logic in any language that compiles to WebAssembly, including:
+
+- C/C++
+- Zig
+- AssemblyScript
+- Go (with TinyGo)
+- And many others
+
+#### Benefits of WebAssembly Extensions:
+
+- **Language Flexibility**: Write extensions in your preferred programming language
+- **Sandboxed Execution**: Extensions run in a secure sandbox with minimal overhead
+- **Hot Reloading**: Update extensions without restarting EtchDNS
+- **Performance**: Near-native execution speed for complex filtering rules
+
+#### Current Capabilities:
+
+The current implementation supports the following hook points:
+
+- `hook_client_query_received`: Called when a client query is received, before checking the cache
+
+#### Example Implementation:
+
+EtchDNS includes an example WebAssembly plugin in the [`hooks-plugin`](hooks-plugin/) directory. This demonstrates how to create a simple plugin that can influence DNS query processing.
+
+To use WebAssembly extensions, specify the path to your compiled WASM file:
 
 ```toml
 # WebAssembly hooks
 hooks_wasm_file = "hooks.wasm"
 ```
 
-See the [`hooks-plugin`](hooks-plugin/) directory for an example implementation.
+#### Building Your Own Extensions:
+
+See the [WebAssembly Extension Guide](#building-webassembly-hooks) in the Development section for details on building your own WebAssembly extensions.
 
 ## Performance Tuning
 
@@ -244,8 +287,34 @@ For more details on available targets, see the [fuzz/README.md](fuzz/README.md) 
 
 ### Building WebAssembly Hooks
 
-```bash
-rustup target add wasm32-unknown-unknown
-cd hooks-plugin
-cargo build --target wasm32-unknown-unknown --release
-```
+To build a WebAssembly extension for EtchDNS:
+
+1. Add the WebAssembly target to your Rust toolchain:
+   ```bash
+   rustup target add wasm32-unknown-unknown
+   ```
+
+2. Build the example plugin or your own extension:
+   ```bash
+   cd hooks-plugin
+   cargo build --target wasm32-unknown-unknown --release
+   ```
+
+3. The compiled WebAssembly module will be available at `target/wasm32-unknown-unknown/release/hooks_plugin.wasm`
+
+4. Copy the WebAssembly module to your EtchDNS directory and update the configuration:
+   ```bash
+   cp target/wasm32-unknown-unknown/release/hooks_plugin.wasm /path/to/etchdns/hooks.wasm
+   ```
+
+For other languages, consult their respective WebAssembly compilation guides. The key requirement is that the resulting WASM module exports functions that match the hook interface defined by EtchDNS.
+
+## License
+
+This project is licensed under the MIT License.
+
+---
+
+<p align="center">
+  Made with ❤️ by the EtchDNS team
+</p>
