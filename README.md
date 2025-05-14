@@ -209,8 +209,8 @@ One of EtchDNS's most powerful features is its ability to be extended through We
 - C/C++
 - Zig
 - AssemblyScript
-- Go (with TinyGo)
-- And many others
+- Go/TinyGo
+- And many others, thanks to Extism.
 
 #### Benefits of WebAssembly Extensions:
 
