@@ -91,8 +91,7 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
             Ok(new_offset) => new_offset,
             Err(e) => {
                 return Err(DnsError::InvalidQuestion(format!(
-                    "Invalid question name: {}",
-                    e
+                    "Invalid question name: {e}"
                 )));
             }
         };
@@ -110,7 +109,7 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
 
         // Validate QCLASS (typically IN=1 or ANY=255)
         if qclass != DNS_CLASS_IN && qclass != DNS_CLASS_ANY {
-            debug!("Unusual: DNS query with QCLASS={}", qclass);
+            debug!("Unusual: DNS query with QCLASS={qclass}");
         }
 
         // Additional validation: extract the query name and validate it
@@ -147,7 +146,7 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
                         if !is_valid_domain_name_char(c, i, label.len()) {
                             let label_str = match std::str::from_utf8(label) {
                                 Ok(s) => s.to_string(),
-                                Err(_) => format!("{:?}", label),
+                                Err(_) => format!("{label:?}"),
                             };
 
                             return Err(DnsError::InvalidDomainNameCharacter {
@@ -161,8 +160,7 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
             }
             Err(e) => {
                 return Err(DnsError::InvalidQuestion(format!(
-                    "Failed to extract query name: {}",
-                    e
+                    "Failed to extract query name: {e}"
                 )));
             }
         }
@@ -182,15 +180,14 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
             let ttl = BigEndian::read_u32(&packet[rr_offset + 4..rr_offset + 8]);
             if ttl > 604800 {
                 // 7 days in seconds
-                debug!("Unusual: DNS record with TTL > 7 days: {} seconds", ttl);
+                debug!("Unusual: DNS record with TTL > 7 days: {ttl} seconds");
             }
 
             // Validate RDLENGTH
             let rdlength = BigEndian::read_u16(&packet[rr_offset + 8..rr_offset + 10]) as usize;
             if packet.len() < rr_offset + 10 + rdlength {
                 return Err(DnsError::InvalidRecord(format!(
-                    "Record data length ({}) exceeds packet bounds",
-                    rdlength
+                    "Record data length ({rdlength}) exceeds packet bounds"
                 )));
             }
 
@@ -199,8 +196,7 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
             Ok(_) => (),
             Err(e) => {
                 return Err(DnsError::InvalidRecord(format!(
-                    "Invalid resource record: {}",
-                    e
+                    "Invalid resource record: {e}"
                 )));
             }
         }
@@ -642,8 +638,7 @@ where
                 // Ccheck that the RDATA size is reasonable
                 if rdlen > DNS_MAX_HOSTNAME_SIZE {
                     debug!(
-                        "Large RDATA for domain name record: {} bytes (type: {})",
-                        rdlen, rr_type
+                        "Large RDATA for domain name record: {rdlen} bytes (type: {rr_type})"
                     );
                 }
             }
@@ -695,8 +690,7 @@ where
                 // Check that the RDATA size is reasonable
                 if rdlen > DNS_MAX_HOSTNAME_SIZE {
                     debug!(
-                        "Large RDATA for domain name record: {} bytes (type: {})",
-                        rdlen, rr_type
+                        "Large RDATA for domain name record: {rdlen} bytes (type: {rr_type})"
                     );
                 }
             }
@@ -789,8 +783,7 @@ pub fn add_edns_client_subnet(
         Ok(addr) => addr,
         Err(_) => {
             debug!(
-                "Invalid client IP address for EDNS-client-subnet: {}",
-                client_ip
+                "Invalid client IP address for EDNS-client-subnet: {client_ip}"
             );
             return Ok(()); // Silently ignore invalid IP addresses
         }
@@ -875,7 +868,7 @@ pub fn add_edns_client_subnet(
     };
 
     // Calculate how many bytes we need to represent the prefix
-    let address_byte_count = (source_prefix_length as usize + 7) / 8;
+    let address_byte_count = (source_prefix_length as usize).div_ceil(8);
 
     // Truncate the address bytes to the specified prefix length
     let mut truncated_address = address_bytes[..address_byte_count].to_vec();
@@ -1106,7 +1099,7 @@ pub fn set_rcode(packet: &mut [u8], rcode: u8) -> DnsResult<()> {
 
     // RCODE is the lower 4 bits of byte 3
     if rcode > 0x0F {
-        return Err(DnsError::InvalidPacket(format!("Invalid RCODE: {}", rcode)));
+        return Err(DnsError::InvalidPacket(format!("Invalid RCODE: {rcode}")));
     }
 
     // Clear the lower 4 bits and set the new RCODE
@@ -1787,7 +1780,7 @@ pub fn extract_edns_client_subnet(packet: &[u8]) -> DnsResult<Option<EdnsClientS
                     let address_len = option_len - 4;
 
                     // Calculate expected address length based on prefix length
-                    let expected_address_len = (source_prefix_length as usize + 7) / 8;
+                    let expected_address_len = (source_prefix_length as usize).div_ceil(8);
                     if address_len < expected_address_len {
                         // Not enough address bytes
                         break;

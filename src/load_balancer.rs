@@ -26,8 +26,7 @@ impl FromStr for LoadBalancingStrategy {
             "fastest" => Ok(LoadBalancingStrategy::Fastest),
             "p2" | "power-of-two" | "poweroftwo" => Ok(LoadBalancingStrategy::PowerOfTwo),
             _ => Err(format!(
-                "Invalid load balancing strategy: {}. Valid options are: random, fastest, p2",
-                s
+                "Invalid load balancing strategy: {s}. Valid options are: random, fastest, p2"
             )),
         }
     }
@@ -86,7 +85,7 @@ pub async fn select_upstream_server<'a>(
             for (addr, _) in resolvers_by_speed {
                 let addr_str = addr.to_string();
                 if let Some(server) = upstream_servers.iter().find(|s| **s == addr_str) {
-                    debug!("Selected fastest server: {}", server);
+                    debug!("Selected fastest server: {server}");
                     return Some(server);
                 }
             }
@@ -139,27 +138,24 @@ pub async fn select_upstream_server<'a>(
                             if *response_time <= threshold {
                                 eligible_servers.push(server);
                                 debug!(
-                                    "Server {} with response time {}ms is eligible (threshold: {}ms)",
-                                    server, response_time, threshold
+                                    "Server {server} with response time {response_time}ms is eligible (threshold: {threshold}ms)"
                                 );
                             } else {
                                 debug!(
-                                    "Server {} with response time {}ms is too slow (threshold: {}ms)",
-                                    server, response_time, threshold
+                                    "Server {server} with response time {response_time}ms is too slow (threshold: {threshold}ms)"
                                 );
                             }
                         } else {
                             // If we don't have stats for this server, include it
                             eligible_servers.push(server);
-                            debug!("Server {} has no stats, including it as eligible", server);
+                            debug!("Server {server} has no stats, including it as eligible");
                         }
                     }
                     Err(_) => {
                         // If we can't parse the address, include it
                         eligible_servers.push(server);
                         debug!(
-                            "Failed to parse server address: {}, including it as eligible",
-                            server
+                            "Failed to parse server address: {server}, including it as eligible"
                         );
                     }
                 }
@@ -199,13 +195,13 @@ pub async fn select_upstream_server<'a>(
             let server1 = eligible_servers[index1];
             let server2 = eligible_servers[index2];
 
-            debug!("P2 randomly selected servers: {} and {}", server1, server2);
+            debug!("P2 randomly selected servers: {server1} and {server2}");
 
             // Parse the addresses
             let addr1 = match server1.parse::<SocketAddr>() {
                 Ok(addr) => addr,
                 Err(_) => {
-                    debug!("Failed to parse server address: {}", server1);
+                    debug!("Failed to parse server address: {server1}");
                     return Some(server1);
                 }
             };
@@ -213,7 +209,7 @@ pub async fn select_upstream_server<'a>(
             let addr2 = match server2.parse::<SocketAddr>() {
                 Ok(addr) => addr,
                 Err(_) => {
-                    debug!("Failed to parse server address: {}", server2);
+                    debug!("Failed to parse server address: {server2}");
                     return Some(server2);
                 }
             };
@@ -241,11 +237,11 @@ pub async fn select_upstream_server<'a>(
                     }
                 }
                 (Some(_), None) => {
-                    debug!("P2 selected server: {} (no stats for {})", server1, server2);
+                    debug!("P2 selected server: {server1} (no stats for {server2})");
                     Some(server1)
                 }
                 (None, Some(_)) => {
-                    debug!("P2 selected server: {} (no stats for {})", server2, server1);
+                    debug!("P2 selected server: {server2} (no stats for {server1})");
                     Some(server2)
                 }
                 (None, None) => {

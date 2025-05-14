@@ -480,14 +480,14 @@ impl Config {
         // Validate each listen address
         for addr_str in &self.listen_addresses {
             addr_str.parse::<SocketAddr>().map_err(|e| {
-                EtchDnsError::Other(format!("Invalid socket address {}: {}", addr_str, e))
+                EtchDnsError::Other(format!("Invalid socket address {addr_str}: {e}"))
             })?;
         }
 
         // Validate each DoH listen address
         for addr_str in &self.doh_listen_addresses {
             addr_str.parse::<SocketAddr>().map_err(|e| {
-                EtchDnsError::Other(format!("Invalid DoH socket address {}: {}", addr_str, e))
+                EtchDnsError::Other(format!("Invalid DoH socket address {addr_str}: {e}"))
             })?;
         }
 
@@ -495,8 +495,7 @@ impl Config {
         for addr_str in &self.control_listen_addresses {
             addr_str.parse::<SocketAddr>().map_err(|e| {
                 EtchDnsError::Other(format!(
-                    "Invalid control server socket address {}: {}",
-                    addr_str, e
+                    "Invalid control server socket address {addr_str}: {e}"
                 ))
             })?;
         }
@@ -504,7 +503,7 @@ impl Config {
         // Validate the load balancing strategy
         self.load_balancing_strategy
             .parse::<load_balancer::LoadBalancingStrategy>()
-            .map_err(|e| EtchDnsError::Other(format!("Invalid load balancing strategy: {}", e)))?;
+            .map_err(|e| EtchDnsError::Other(format!("Invalid load balancing strategy: {e}")))?;
 
         // Validate rate limiting parameters
         if self.udp_rate_limit_window > 0 && self.udp_rate_limit_count == 0 {
@@ -565,8 +564,7 @@ impl Config {
             // Check if the chroot directory exists
             if !std::path::Path::new(chroot_dir).exists() {
                 return Err(EtchDnsError::Other(format!(
-                    "Chroot directory '{}' does not exist",
-                    chroot_dir
+                    "Chroot directory '{chroot_dir}' does not exist"
                 )));
             }
 
@@ -587,7 +585,7 @@ impl Config {
 
         for addr_str in &self.listen_addresses {
             let addr = addr_str.parse::<SocketAddr>().map_err(|e| {
-                EtchDnsError::Other(format!("Invalid socket address {}: {}", addr_str, e))
+                EtchDnsError::Other(format!("Invalid socket address {addr_str}: {e}"))
             })?;
             addrs.push(addr);
         }
@@ -601,7 +599,7 @@ impl Config {
 
         for addr_str in &self.doh_listen_addresses {
             let addr = addr_str.parse::<SocketAddr>().map_err(|e| {
-                EtchDnsError::Other(format!("Invalid DoH socket address {}: {}", addr_str, e))
+                EtchDnsError::Other(format!("Invalid DoH socket address {addr_str}: {e}"))
             })?;
             addrs.push(addr);
         }
@@ -616,8 +614,7 @@ impl Config {
         for addr_str in &self.control_listen_addresses {
             let addr = addr_str.parse::<SocketAddr>().map_err(|e| {
                 EtchDnsError::Other(format!(
-                    "Invalid control server socket address {}: {}",
-                    addr_str, e
+                    "Invalid control server socket address {addr_str}: {e}"
                 ))
             })?;
             addrs.push(addr);
@@ -727,28 +724,26 @@ impl ClientQuery {
         // Validate that this is a valid DNS packet
         if let Err(e) = dns_parser::validate_dns_packet(&self.data) {
             // If validation fails, log the error and return without responding
-            error!("Invalid DNS packet: {}", e);
+            error!("Invalid DNS packet: {e}");
             debug!("Dropping invalid DNS packet without response");
-            return Err(DnsError::InvalidPacket(format!("Invalid DNS packet: {}", e)).into());
+            return Err(DnsError::InvalidPacket(format!("Invalid DNS packet: {e}")).into());
         }
 
         // Choose an upstream server based on the load balancing strategy
         let upstream_server_str = self.select_upstream_server().await?;
-        debug!("Selected upstream server: {}", upstream_server_str);
+        debug!("Selected upstream server: {upstream_server_str}");
 
         // Parse the upstream server address
         let upstream_addr = upstream_server_str.parse::<SocketAddr>().map_err(|e| {
             DnsError::UpstreamError(format!(
-                "Failed to parse upstream server address {}: {}",
-                upstream_server_str, e
+                "Failed to parse upstream server address {upstream_server_str}: {e}"
             ))
         })?;
 
         // Create a new UDP socket for the upstream connection
         let upstream_socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
             DnsError::UpstreamError(format!(
-                "Failed to bind socket for upstream connection: {}",
-                e
+                "Failed to bind socket for upstream connection: {e}"
             ))
         })?;
 
@@ -758,7 +753,7 @@ impl ClientQuery {
         if let Err(e) =
             dns_parser::set_edns_max_payload_size(&mut query_data, self.dns_packet_len_max as u16)
         {
-            error!("Failed to set EDNS maximum payload size: {}", e);
+            error!("Failed to set EDNS maximum payload size: {e}");
             debug!("Continuing with original query without EDNS");
             query_data = self.data.clone(); // Revert to original query data
         } else {
@@ -784,7 +779,7 @@ impl ClientQuery {
                             );
                         }
                         Err(e) => {
-                            error!("Failed to add EDNS-client-subnet: {}", e);
+                            error!("Failed to add EDNS-client-subnet: {e}");
                             debug!("Continuing without EDNS-client-subnet");
                         }
                     }
@@ -806,20 +801,19 @@ impl ClientQuery {
 
         // Replace the transaction ID in the query with the random one
         if let Err(e) = dns_parser::set_tid(&mut query_data, random_tid) {
-            error!("Failed to set transaction ID: {}", e);
+            error!("Failed to set transaction ID: {e}");
             return Err(
-                DnsError::InvalidPacket(format!("Failed to set transaction ID: {}", e)).into(),
+                DnsError::InvalidPacket(format!("Failed to set transaction ID: {e}")).into(),
             );
         }
 
         debug!(
-            "Replaced query transaction ID {} with random ID {}",
-            original_tid, random_tid
+            "Replaced query transaction ID {original_tid} with random ID {random_tid}"
         );
 
         // Set the initial timeout to half of the server_timeout
         let initial_timeout = std::cmp::max(1, self.server_timeout / 2);
-        debug!("Using initial timeout of {} seconds", initial_timeout);
+        debug!("Using initial timeout of {initial_timeout} seconds");
 
         // Receive buffer
         let mut buf = vec![0u8; self.dns_packet_len_max]; // Use the configured maximum DNS packet size
@@ -829,16 +823,14 @@ impl ClientQuery {
 
         // First attempt
         debug!(
-            "Sending query to upstream server (first attempt): {}",
-            upstream_addr
+            "Sending query to upstream server (first attempt): {upstream_addr}"
         );
         upstream_socket
             .send_to(&query_data, &upstream_addr)
             .await
             .map_err(|e| {
                 DnsError::UpstreamError(format!(
-                    "Failed to send query to upstream server {}: {}",
-                    upstream_addr, e
+                    "Failed to send query to upstream server {upstream_addr}: {e}"
                 ))
             })?;
 
@@ -851,8 +843,7 @@ impl ClientQuery {
                 // Successfully received a response within the initial timeout
                 let response_time = start_time.elapsed();
                 debug!(
-                    "Received response of size {} bytes from upstream server (first attempt): {} in {:?}",
-                    len, upstream_addr, response_time
+                    "Received response of size {len} bytes from upstream server (first attempt): {upstream_addr} in {response_time:?}"
                 );
 
                 // Record the successful response in stats if available
@@ -872,8 +863,7 @@ impl ClientQuery {
             Ok(Err(e)) => {
                 // Socket error
                 error!(
-                    "Failed to receive response from upstream server {}: {}",
-                    upstream_addr, e
+                    "Failed to receive response from upstream server {upstream_addr}: {e}"
                 );
 
                 // Record the failure in stats if available
@@ -888,16 +878,14 @@ impl ClientQuery {
                 }
 
                 Err(DnsError::UpstreamError(format!(
-                    "Failed to receive response from upstream server {}: {}",
-                    upstream_addr, e
+                    "Failed to receive response from upstream server {upstream_addr}: {e}"
                 ))
                 .into())
             }
             Err(_) => {
                 // Timeout occurred, try again
                 debug!(
-                    "Timeout waiting for response from upstream server after {} seconds (retrying): {}",
-                    initial_timeout, upstream_addr
+                    "Timeout waiting for response from upstream server after {initial_timeout} seconds (retrying): {upstream_addr}"
                 );
 
                 // Record the timeout in stats if available
@@ -913,16 +901,14 @@ impl ClientQuery {
 
                 // Second attempt
                 debug!(
-                    "Sending query to upstream server (retry attempt): {}",
-                    upstream_addr
+                    "Sending query to upstream server (retry attempt): {upstream_addr}"
                 );
                 upstream_socket
                     .send_to(&query_data, &upstream_addr)
                     .await
                     .map_err(|e| {
                         DnsError::UpstreamError(format!(
-                            "Failed to send retry query to upstream server {}: {}",
-                            upstream_addr, e
+                            "Failed to send retry query to upstream server {upstream_addr}: {e}"
                         ))
                     })?;
 
@@ -936,8 +922,7 @@ impl ClientQuery {
                     Ok(Ok((len, _))) => {
                         // Successfully received a response on the retry
                         debug!(
-                            "Received response of size {} bytes from upstream server (retry attempt): {}",
-                            len, upstream_addr
+                            "Received response of size {len} bytes from upstream server (retry attempt): {upstream_addr}"
                         );
 
                         // Process the response
@@ -946,20 +931,17 @@ impl ClientQuery {
                     Ok(Err(e)) => {
                         // Socket error on retry
                         error!(
-                            "Failed to receive response from upstream server on retry {}: {}",
-                            upstream_addr, e
+                            "Failed to receive response from upstream server on retry {upstream_addr}: {e}"
                         );
                         Err(DnsError::UpstreamError(format!(
-                            "Failed to receive response from upstream server on retry {}: {}",
-                            upstream_addr, e
+                            "Failed to receive response from upstream server on retry {upstream_addr}: {e}"
                         ))
                         .into())
                     }
                     Err(_) => {
                         // Timeout on retry
                         debug!(
-                            "Timeout waiting for response from upstream server on retry after {} seconds: {}",
-                            remaining_timeout, upstream_addr
+                            "Timeout waiting for response from upstream server on retry after {remaining_timeout} seconds: {upstream_addr}"
                         );
 
                         // Record the timeout in stats if available
@@ -1016,20 +998,19 @@ async fn process_response(
     let response_tid = dns_parser::tid(response_data);
     if response_tid != expected_tid {
         error!(
-            "Transaction ID mismatch: expected {}, got {}",
-            expected_tid, response_tid
+            "Transaction ID mismatch: expected {expected_tid}, got {response_tid}"
         );
         return Err(
             DnsError::UpstreamError("Transaction ID mismatch in response".to_string()).into(),
         );
     }
 
-    debug!("Verified response transaction ID: {}", response_tid);
+    debug!("Verified response transaction ID: {response_tid}");
 
     // Validate that the response is a valid DNS response
     if let Err(e) = dns_parser::validate_dns_response(response_data) {
-        error!("Invalid DNS response: {}", e);
-        return Err(DnsError::UpstreamError(format!("Invalid DNS response: {}", e)).into());
+        error!("Invalid DNS response: {e}");
+        return Err(DnsError::UpstreamError(format!("Invalid DNS response: {e}")).into());
     }
 
     // Check if the response is truncated (TC bit set)
@@ -1046,8 +1027,7 @@ async fn process_response(
                 // Log the error but still return the truncated UDP response
                 // This is better than returning nothing
                 warn!(
-                    "Failed to get complete response via TCP: {}, returning truncated UDP response",
-                    e
+                    "Failed to get complete response via TCP: {e}, returning truncated UDP response"
                 );
             }
         }
@@ -1067,8 +1047,7 @@ async fn retry_with_tcp(
         Ok(data) => data,
         Err(e) => {
             return Err(DnsError::InvalidPacket(format!(
-                "Failed to recover question from response: {}",
-                e
+                "Failed to recover question from response: {e}"
             ))
             .into());
         }
@@ -1078,15 +1057,13 @@ async fn retry_with_tcp(
 
     // Create a TCP connection to the upstream server
     debug!(
-        "Connecting to upstream DNS server via TCP: {}",
-        upstream_addr
+        "Connecting to upstream DNS server via TCP: {upstream_addr}"
     );
     let mut tcp_stream = match tokio::net::TcpStream::connect(upstream_addr).await {
         Ok(stream) => stream,
         Err(e) => {
             return Err(DnsError::UpstreamError(format!(
-                "Failed to connect to upstream server via TCP: {}",
-                e
+                "Failed to connect to upstream server via TCP: {e}"
             ))
             .into());
         }
@@ -1100,10 +1077,10 @@ async fn retry_with_tcp(
     tcp_query.extend_from_slice(&query_data);
 
     // Send the query
-    debug!("Sending DNS query via TCP to {}", upstream_addr);
+    debug!("Sending DNS query via TCP to {upstream_addr}");
     if let Err(e) = tcp_stream.write_all(&tcp_query).await {
         return Err(
-            DnsError::UpstreamError(format!("Failed to send DNS query via TCP: {}", e)).into(),
+            DnsError::UpstreamError(format!("Failed to send DNS query via TCP: {e}")).into(),
         );
     }
 
@@ -1113,8 +1090,7 @@ async fn retry_with_tcp(
     let mut length_buf = [0u8; 2];
     if let Err(e) = tcp_stream.read_exact(&mut length_buf).await {
         return Err(DnsError::UpstreamError(format!(
-            "Failed to read DNS response length via TCP: {}",
-            e
+            "Failed to read DNS response length via TCP: {e}"
         ))
         .into());
     }
@@ -1123,8 +1099,7 @@ async fn retry_with_tcp(
     let response_len = ((length_buf[0] as usize) << 8) | (length_buf[1] as usize);
     if !(dns_parser::DNS_PACKET_LEN_MIN..=dns_parser::DNS_MAX_PACKET_SIZE).contains(&response_len) {
         return Err(DnsError::UpstreamError(format!(
-            "Invalid DNS response length via TCP: {}",
-            response_len
+            "Invalid DNS response length via TCP: {response_len}"
         ))
         .into());
     }
@@ -1148,8 +1123,7 @@ async fn retry_with_tcp(
                 if bytes_read == 0 {
                     // Connection closed prematurely
                     return Err(DnsError::UpstreamError(format!(
-                        "TCP connection closed unexpectedly after reading {} of {} bytes",
-                        total_bytes_read, response_len
+                        "TCP connection closed unexpectedly after reading {total_bytes_read} of {response_len} bytes"
                     ))
                     .into());
                 }
@@ -1158,21 +1132,18 @@ async fn retry_with_tcp(
                 // Only enforce minimum read size if we're not near the end
                 if bytes_read < min_read_size && bytes_remaining > min_read_size {
                     debug!(
-                        "Small TCP read detected ({} bytes). This could be inefficient.",
-                        bytes_read
+                        "Small TCP read detected ({bytes_read} bytes). This could be inefficient."
                     );
                 }
 
                 total_bytes_read += bytes_read;
                 debug!(
-                    "Read {} bytes, total so far: {}/{}",
-                    bytes_read, total_bytes_read, response_len
+                    "Read {bytes_read} bytes, total so far: {total_bytes_read}/{response_len}"
                 );
             }
             Err(e) => {
                 return Err(DnsError::UpstreamError(format!(
-                    "Failed to read DNS response via TCP after {} of {} bytes: {}",
-                    total_bytes_read, response_len, e
+                    "Failed to read DNS response via TCP after {total_bytes_read} of {response_len} bytes: {e}"
                 ))
                 .into());
             }
@@ -1183,8 +1154,7 @@ async fn retry_with_tcp(
     let response_tid = dns_parser::tid(&response_buf);
     if response_tid != expected_tid {
         error!(
-            "TCP response transaction ID mismatch: expected {}, got {}",
-            expected_tid, response_tid
+            "TCP response transaction ID mismatch: expected {expected_tid}, got {response_tid}"
         );
         return Err(
             DnsError::UpstreamError("Transaction ID mismatch in TCP response".to_string()).into(),
@@ -1193,13 +1163,12 @@ async fn retry_with_tcp(
 
     // Validate that the response is a valid DNS response
     if let Err(e) = dns_parser::validate_dns_response(&response_buf) {
-        error!("Invalid DNS TCP response: {}", e);
-        return Err(DnsError::UpstreamError(format!("Invalid DNS TCP response: {}", e)).into());
+        error!("Invalid DNS TCP response: {e}");
+        return Err(DnsError::UpstreamError(format!("Invalid DNS TCP response: {e}")).into());
     }
 
     debug!(
-        "Successfully received DNS response via TCP, size: {}",
-        response_len
+        "Successfully received DNS response via TCP, size: {response_len}"
     );
     Ok(response_buf)
 }
@@ -1400,13 +1369,12 @@ async fn process_tcp_connection(
                     Ok(_) => {
                         // Convert the length field to a u16
                         let len = ((len_buf[0] as u16) << 8) | (len_buf[1] as u16);
-                        debug!("TCP client {} sent a query of length {}", addr, len);
+                        debug!("TCP client {addr} sent a query of length {len}");
 
                         // Check if the length is valid
                         if len as usize > dns_packet_len_max {
                             error!(
-                                "TCP client {} sent a query with length {} which exceeds the maximum of {}",
-                                addr, len, dns_packet_len_max
+                                "TCP client {addr} sent a query with length {len} which exceeds the maximum of {dns_packet_len_max}"
                             );
                             break;
                         }
@@ -1429,8 +1397,7 @@ async fn process_tcp_connection(
                                             // Connection closed prematurely
                                             return (Err(std::io::Error::new(
                                                 std::io::ErrorKind::UnexpectedEof,
-                                                format!("TCP connection closed unexpectedly after reading {} of {} bytes",
-                                                        total_bytes_read, len)
+                                                format!("TCP connection closed unexpectedly after reading {total_bytes_read} of {len} bytes")
                                             )), query_buf);
                                         }
 
@@ -1438,14 +1405,12 @@ async fn process_tcp_connection(
                                         // Only enforce minimum read size if we're not near the end
                                         if bytes_read < min_read_size && bytes_remaining > min_read_size {
                                             debug!(
-                                                "Small TCP read detected from client {} ({} bytes). This could be inefficient.",
-                                                addr, bytes_read
+                                                "Small TCP read detected from client {addr} ({bytes_read} bytes). This could be inefficient."
                                             );
                                         }
 
                                         total_bytes_read += bytes_read;
-                                        debug!("Read {} bytes from client {}, total so far: {}/{}",
-                                               bytes_read, addr, total_bytes_read, len);
+                                        debug!("Read {bytes_read} bytes from client {addr}, total so far: {total_bytes_read}/{len}");
                                     },
                                     Err(e) => {
                                         return (Err(e), query_buf);
@@ -1461,7 +1426,7 @@ async fn process_tcp_connection(
                             Ok((read_result, query_buf)) => {
                                 match read_result {
                                     Ok(_) => {
-                                        debug!("Read {} bytes from TCP client {}", len, addr);
+                                        debug!("Read {len} bytes from TCP client {addr}");
 
                                         // Create a new TCPClient without cloning the query buffer
                                         let client = TCPClient::new(
@@ -1495,7 +1460,7 @@ async fn process_tcp_connection(
 
                                         // Process the client query directly
                                         client.process_query().await;
-                                        debug!("Completed processing task for TCP client {}", addr);
+                                        debug!("Completed processing task for TCP client {addr}");
 
                                         // Remove the client from the slab
                                         {
@@ -1504,8 +1469,7 @@ async fn process_tcp_connection(
                                             // Remove the client by slot
                                             if let Err(e) = slab.remove(client_slot) {
                                                 error!(
-                                                    "Failed to remove TCP client from slab: {}",
-                                                    e
+                                                    "Failed to remove TCP client from slab: {e}"
                                                 );
                                             } else {
                                                 debug!(
@@ -1518,8 +1482,7 @@ async fn process_tcp_connection(
                                     }
                                     Err(e) => {
                                         error!(
-                                            "Failed to read query from TCP client {}: {}",
-                                            addr, e
+                                            "Failed to read query from TCP client {addr}: {e}"
                                         );
                                         break;
                                     }
@@ -1527,8 +1490,7 @@ async fn process_tcp_connection(
                             }
                             Err(_) => {
                                 info!(
-                                    "TCP connection from {} timed out after {} seconds",
-                                    addr, server_timeout
+                                    "TCP connection from {addr} timed out after {server_timeout} seconds"
                                 );
                                 break;
                             }
@@ -1537,9 +1499,9 @@ async fn process_tcp_connection(
                     Err(e) => {
                         // If we get an EOF, the client closed the connection
                         if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                            debug!("TCP client {} closed the connection", addr);
+                            debug!("TCP client {addr} closed the connection");
                         } else {
-                            error!("Failed to read length from TCP client {}: {}", addr, e);
+                            error!("Failed to read length from TCP client {addr}: {e}");
                         }
                         break;
                     }
@@ -1547,15 +1509,14 @@ async fn process_tcp_connection(
             }
             Err(_) => {
                 info!(
-                    "TCP connection from {} timed out after {} seconds",
-                    addr, server_timeout
+                    "TCP connection from {addr} timed out after {server_timeout} seconds"
                 );
                 break;
             }
         }
     }
 
-    debug!("TCP connection handler for client {} exiting", addr);
+    debug!("TCP connection handler for client {addr} exiting");
 }
 
 /// Common functionality for processing DNS queries
@@ -1622,8 +1583,8 @@ trait DnsQueryProcessor {
                         // Check if the response contains an error
                         if let Some(error_msg) = response.error {
                             // Log the error
-                            error!("Error in DNS response: {}", error_msg);
-                            debug!("Not sending error response to client {}", client_addr);
+                            error!("Error in DNS response: {error_msg}");
+                            debug!("Not sending error response to client {client_addr}");
                             return None;
                         }
 
@@ -1632,12 +1593,11 @@ trait DnsQueryProcessor {
 
                         // Replace the query ID in the response with the client's query ID
                         if let Err(e) = dns_parser::set_tid(&mut response_data, client_query_id) {
-                            error!("Failed to set transaction ID in response: {}", e);
+                            error!("Failed to set transaction ID in response: {e}");
                             return None;
                         } else {
                             debug!(
-                                "Replaced response transaction ID with client query ID: {}",
-                                client_query_id
+                                "Replaced response transaction ID with client query ID: {client_query_id}"
                             );
                         }
 
@@ -1645,15 +1605,15 @@ trait DnsQueryProcessor {
                         Some((response_data, client_query_id))
                     }
                     Err(e) => {
-                        error!("Failed to receive response from query manager: {}", e);
-                        debug!("Error details: {:?}", e);
+                        error!("Failed to receive response from query manager: {e}");
+                        debug!("Error details: {e:?}");
                         None
                     }
                 }
             }
             Err(e) => {
-                error!("Failed to submit query to query manager: {}", e);
-                debug!("Error details: {:?}", e);
+                error!("Failed to submit query to query manager: {e}");
+                debug!("Error details: {e:?}");
                 None
             }
         }
@@ -1703,7 +1663,7 @@ impl Client for TCPClient {
                 }
                 Err(e) => {
                     error!("Failed to send response to TCP client {}: {}", self.addr, e);
-                    debug!("Error details: {:?}", e);
+                    debug!("Error details: {e:?}");
                 }
             }
         }
@@ -1752,8 +1712,8 @@ impl Client for UDPClient {
                         response_data = truncated_data;
                     }
                     Err(e) => {
-                        error!("Failed to truncate response: {}", e);
-                        debug!("Error details: {:?}", e);
+                        error!("Failed to truncate response: {e}");
+                        debug!("Error details: {e:?}");
                         // Continue with the original response
                     }
                 }
@@ -1767,7 +1727,7 @@ impl Client for UDPClient {
                 }
                 Err(e) => {
                     error!("Failed to send response to UDP client {}: {}", self.addr, e);
-                    debug!("Error details: {:?}", e);
+                    debug!("Error details: {e:?}");
                 }
             }
         }
@@ -1786,8 +1746,8 @@ async fn main() -> EtchDnsResult<()> {
     let log_level = config.log_level.to_lowercase();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&log_level)).init();
 
-    debug!("Command line arguments: {:?}", args);
-    debug!("Loaded configuration: {:?}", config);
+    debug!("Command line arguments: {args:?}");
+    debug!("Loaded configuration: {config:?}");
 
     // Log startup information at INFO level
     info!("Starting EtchDNS server");
@@ -1795,13 +1755,13 @@ async fn main() -> EtchDnsResult<()> {
 
     // Log listening addresses
     for addr in &config.listen_addresses {
-        info!("Listening on: {} (UDP/TCP)", addr);
+        info!("Listening on: {addr} (UDP/TCP)");
     }
 
     // Log DoH addresses if configured
     if !config.doh_listen_addresses.is_empty() {
         for addr in &config.doh_listen_addresses {
-            info!("Listening on: {} (DoH)", addr);
+            info!("Listening on: {addr} (DoH)");
         }
     } else {
         info!("DoH server is disabled");
@@ -1828,12 +1788,12 @@ async fn main() -> EtchDnsResult<()> {
 
     // Log domain filtering information
     if let Some(file) = &config.allowed_zones_file {
-        info!("Domain filtering enabled with allowed zones file: {}", file);
+        info!("Domain filtering enabled with allowed zones file: {file}");
     }
 
     // Log NX domains information
     if let Some(file) = &config.nx_zones_file {
-        info!("NX domains filtering enabled with file: {}", file);
+        info!("NX domains filtering enabled with file: {file}");
     }
 
     // Log rate limiting information
@@ -1910,8 +1870,7 @@ async fn main() -> EtchDnsResult<()> {
     let max_udp_clients = config.max_udp_clients;
     let max_tcp_clients = config.max_tcp_clients;
     debug!(
-        "Using a maximum of {} UDP clients and {} TCP clients in the slabs",
-        max_udp_clients, max_tcp_clients
+        "Using a maximum of {max_udp_clients} UDP clients and {max_tcp_clients} TCP clients in the slabs"
     );
     let udp_clients_slab = Arc::new(Mutex::new(
         Slab::with_capacity(max_udp_clients).expect("Failed to create UDP clients slab"),
@@ -1938,12 +1897,12 @@ async fn main() -> EtchDnsResult<()> {
     ));
 
     if let Some(log_file) = &config.query_log_file {
-        info!("Query logging enabled to file: {}", log_file);
+        info!("Query logging enabled to file: {log_file}");
     }
 
     // Load WebAssembly hooks if specified and hooks feature is enabled
     if let Some(wasm_file) = &config.hooks_wasm_file {
-        info!("Loading WebAssembly hooks from file: {}", wasm_file);
+        info!("Loading WebAssembly hooks from file: {wasm_file}");
         match hooks::Hooks::with_wasm_file(wasm_file) {
             Ok(wasm_hooks) => {
                 // Replace the default hooks with the WebAssembly hooks
@@ -1951,7 +1910,7 @@ async fn main() -> EtchDnsResult<()> {
                 debug!("Successfully loaded WebAssembly hooks");
             }
             Err(e) => {
-                error!("Failed to load WebAssembly hooks: {}", e);
+                error!("Failed to load WebAssembly hooks: {e}");
                 // Continue with default hooks
             }
         }
@@ -1961,8 +1920,7 @@ async fn main() -> EtchDnsResult<()> {
     let cache_capacity = config.cache_size;
     let dns_cache = Arc::new(cache::create_dns_cache(cache_capacity));
     debug!(
-        "Created DNS cache with capacity of {} entries",
-        cache_capacity
+        "Created DNS cache with capacity of {cache_capacity} entries"
     );
 
     // Create rate limiters for UDP and TCP if enabled
@@ -2069,18 +2027,15 @@ async fn main() -> EtchDnsResult<()> {
                 let zone_count = zones.len();
                 query_manager.set_allowed_zones(zones);
                 info!(
-                    "Loaded {} allowed zones from {}",
-                    zone_count, allowed_zones_file
+                    "Loaded {zone_count} allowed zones from {allowed_zones_file}"
                 );
             }
             Err(e) => {
                 error!(
-                    "Failed to load allowed zones from {}: {}",
-                    allowed_zones_file, e
+                    "Failed to load allowed zones from {allowed_zones_file}: {e}"
                 );
                 return Err(EtchDnsError::ConfigParseError(format!(
-                    "Failed to load allowed zones file: {}",
-                    e
+                    "Failed to load allowed zones file: {e}"
                 )));
             }
         }
@@ -2093,18 +2048,15 @@ async fn main() -> EtchDnsResult<()> {
                 let zone_count = zones.len();
                 query_manager.set_nx_zones(zones);
                 info!(
-                    "Loaded {} nonexistent zones from {}",
-                    zone_count, nx_zones_file
+                    "Loaded {zone_count} nonexistent zones from {nx_zones_file}"
                 );
             }
             Err(e) => {
                 error!(
-                    "Failed to load nonexistent zones from {}: {}",
-                    nx_zones_file, e
+                    "Failed to load nonexistent zones from {nx_zones_file}: {e}"
                 );
                 return Err(EtchDnsError::ConfigParseError(format!(
-                    "Failed to load nonexistent zones file: {}",
-                    e
+                    "Failed to load nonexistent zones file: {e}"
                 )));
             }
         }
@@ -2112,13 +2064,12 @@ async fn main() -> EtchDnsResult<()> {
 
     let query_manager = Arc::new(query_manager);
     debug!(
-        "Created query manager with a maximum of {} in-flight queries, {} second timeout, {} byte packet size, and '{}' load balancing strategy",
-        max_inflight_queries, server_timeout, dns_packet_len_max, load_balancing_strategy
+        "Created query manager with a maximum of {max_inflight_queries} in-flight queries, {server_timeout} second timeout, {dns_packet_len_max} byte packet size, and '{load_balancing_strategy}' load balancing strategy"
     );
 
     // Drop privileges if configured
     if let Some(username) = &config.user {
-        info!("Dropping privileges to user: {}", username);
+        info!("Dropping privileges to user: {username}");
 
         // Create a new privdrop instance
         let pd = privdrop::PrivDrop::default();
@@ -2128,13 +2079,13 @@ async fn main() -> EtchDnsResult<()> {
 
         // Set the group if specified
         if let Some(group) = &config.group {
-            info!("Using group: {}", group);
+            info!("Using group: {group}");
             pd = pd.group(group);
         }
 
         // Set chroot if specified
         if let Some(chroot_dir) = &config.chroot {
-            info!("Using chroot directory: {}", chroot_dir);
+            info!("Using chroot directory: {chroot_dir}");
             pd = pd.chroot(chroot_dir);
         }
 
@@ -2144,8 +2095,8 @@ async fn main() -> EtchDnsResult<()> {
                 info!("Successfully dropped privileges");
             }
             Err(e) => {
-                let error_msg = format!("Failed to drop privileges: {}", e);
-                error!("{}", error_msg);
+                let error_msg = format!("Failed to drop privileges: {e}");
+                error!("{error_msg}");
                 return Err(EtchDnsError::PrivilegeDropError(error_msg));
             }
         }
@@ -2190,13 +2141,13 @@ async fn main() -> EtchDnsResult<()> {
                             // Probe the server
                             match probe_server(addr, server_timeout).await {
                                 Ok(response_time) => {
-                                    debug!("Probe to {} completed in {:.2?}", addr, response_time);
+                                    debug!("Probe to {addr} completed in {response_time:.2?}");
 
                                     // Record the success in stats
                                     stats.record_success(addr, response_time).await;
                                 }
                                 Err(e) => {
-                                    warn!("Probe to {} failed: {}", addr, e);
+                                    warn!("Probe to {addr} failed: {e}");
 
                                     // Record the failure in stats
                                     stats.record_failure(addr).await;
@@ -2204,7 +2155,7 @@ async fn main() -> EtchDnsResult<()> {
                             }
                         }
                         Err(e) => {
-                            error!("Failed to parse server address {}: {}", server, e);
+                            error!("Failed to parse server address {server}: {e}");
                         }
                     }
                 }
@@ -2219,7 +2170,7 @@ async fn main() -> EtchDnsResult<()> {
     if let Some(metrics_addr) = &config.metrics_address {
         // Parse the metrics address
         let metrics_addr = metrics_addr.parse::<SocketAddr>().map_err(|e| {
-            EtchDnsError::Other(format!("Invalid metrics address {}: {}", metrics_addr, e))
+            EtchDnsError::Other(format!("Invalid metrics address {metrics_addr}: {e}"))
         })?;
 
         // Clone the values we need for the metrics server
@@ -2230,8 +2181,7 @@ async fn main() -> EtchDnsResult<()> {
         // Create a task for the metrics server
         let metrics_task = tokio::spawn(async move {
             info!(
-                "Starting metrics server on {}, path: {}",
-                metrics_addr, metrics_path
+                "Starting metrics server on {metrics_addr}, path: {metrics_path}"
             );
 
             if let Err(e) = metrics::start_metrics_server(
@@ -2242,7 +2192,7 @@ async fn main() -> EtchDnsResult<()> {
             )
             .await
             {
-                error!("Metrics server error: {}", e);
+                error!("Metrics server error: {e}");
             }
         });
 
@@ -2271,7 +2221,7 @@ async fn main() -> EtchDnsResult<()> {
 
             // Create a task for the DoH server
             let doh_task = tokio::spawn(async move {
-                info!("Starting DoH server on {}", doh_addr);
+                info!("Starting DoH server on {doh_addr}");
 
                 if let Err(e) = doh::start_doh_server(
                     doh_addr,
@@ -2286,7 +2236,7 @@ async fn main() -> EtchDnsResult<()> {
                 )
                 .await
                 {
-                    error!("DoH server error: {}", e);
+                    error!("DoH server error: {e}");
                 }
             });
 
@@ -2309,8 +2259,7 @@ async fn main() -> EtchDnsResult<()> {
             // Create a task for the control server
             let control_task = tokio::spawn(async move {
                 info!(
-                    "Starting control server on {}, base path: {}",
-                    control_addr, control_path
+                    "Starting control server on {control_addr}, base path: {control_path}"
                 );
 
                 if let Err(e) = control::start_control_server(
@@ -2321,7 +2270,7 @@ async fn main() -> EtchDnsResult<()> {
                 )
                 .await
                 {
-                    error!("Control server error: {}", e);
+                    error!("Control server error: {e}");
                 }
             });
 
@@ -2351,14 +2300,13 @@ async fn main() -> EtchDnsResult<()> {
             // Main receive loop for this socket
             loop {
                 // Log that we're waiting for a packet
-                debug!("Waiting for incoming UDP packets on {}...", socket_addr);
+                debug!("Waiting for incoming UDP packets on {socket_addr}...");
 
                 // Wait for a packet
                 match socket.recv_from(&mut buf).await {
                     Ok((len, addr)) => {
                         debug!(
-                            "Received packet of size {} bytes from UDP client {}",
-                            len, addr
+                            "Received packet of size {len} bytes from UDP client {addr}"
                         );
 
                         // Check rate limit for UDP client if enabled
@@ -2369,8 +2317,7 @@ async fn main() -> EtchDnsResult<()> {
                             // Check if the client is allowed to make a query
                             if !rate_limiter.is_allowed(client_ip).await {
                                 warn!(
-                                    "Rate limit exceeded for UDP client {}, dropping query",
-                                    addr
+                                    "Rate limit exceeded for UDP client {addr}, dropping query"
                                 );
                                 continue;
                             }
@@ -2382,7 +2329,7 @@ async fn main() -> EtchDnsResult<()> {
 
                         // Clone the socket for the task
                         let socket_clone = socket.clone();
-                        debug!("Spawning new task to handle UDP client {}", addr);
+                        debug!("Spawning new task to handle UDP client {addr}");
 
                         // Create a new UDPClient
                         let client = UDPClient::new(
@@ -2396,7 +2343,7 @@ async fn main() -> EtchDnsResult<()> {
                         // Spawn a new task to handle the response
                         let udp_clients_slab_clone = udp_clients_slab.clone();
                         tokio::spawn(async move {
-                            debug!("Started processing task for UDP client {}", addr);
+                            debug!("Started processing task for UDP client {addr}");
 
                             // Add the client to the slab
                             let client_slot = {
@@ -2421,7 +2368,7 @@ async fn main() -> EtchDnsResult<()> {
 
                             // Process the client query
                             client.process_query().await;
-                            debug!("Completed processing task for UDP client {}", addr);
+                            debug!("Completed processing task for UDP client {addr}");
 
                             // Remove the client from the slab
                             {
@@ -2429,7 +2376,7 @@ async fn main() -> EtchDnsResult<()> {
 
                                 // Remove the client by slot
                                 if let Err(e) = slab.remove(client_slot) {
-                                    error!("Failed to remove UDP client from slab: {}", e);
+                                    error!("Failed to remove UDP client from slab: {e}");
                                 } else {
                                     debug!(
                                         "Removed UDP client from slab with slot {}, slab size: {}",
@@ -2441,7 +2388,7 @@ async fn main() -> EtchDnsResult<()> {
                         });
                     }
                     Err(e) => {
-                        error!("Failed to receive packet on UDP {}: {}", socket_addr, e);
+                        error!("Failed to receive packet on UDP {socket_addr}: {e}");
                     }
                 }
             }
@@ -2464,12 +2411,12 @@ async fn main() -> EtchDnsResult<()> {
             // Main accept loop for this listener
             loop {
                 // Log that we're waiting for a connection
-                debug!("Waiting for incoming TCP connections on {}...", socket_addr);
+                debug!("Waiting for incoming TCP connections on {socket_addr}...");
 
                 // Wait for a connection
                 match listener.accept().await {
                     Ok((stream, addr)) => {
-                        debug!("Accepted TCP connection from {}", addr);
+                        debug!("Accepted TCP connection from {addr}");
 
                         // Check rate limit for TCP client if enabled
                         if let Some(rate_limiter) = &tcp_rate_limiter {
@@ -2479,8 +2426,7 @@ async fn main() -> EtchDnsResult<()> {
                             // Check if the client is allowed to make a connection
                             if !rate_limiter.is_allowed(client_ip).await {
                                 warn!(
-                                    "Rate limit exceeded for TCP client {}, dropping connection",
-                                    addr
+                                    "Rate limit exceeded for TCP client {addr}, dropping connection"
                                 );
                                 continue;
                             }
@@ -2493,7 +2439,7 @@ async fn main() -> EtchDnsResult<()> {
 
                         // Spawn a new task to handle the TCP connection
                         tokio::spawn(async move {
-                            debug!("Started TCP connection handler for client {}", addr);
+                            debug!("Started TCP connection handler for client {addr}");
 
                             // Process the TCP connection
                             process_tcp_connection(
@@ -2507,11 +2453,11 @@ async fn main() -> EtchDnsResult<()> {
                             )
                             .await;
 
-                            debug!("Completed TCP connection handler for client {}", addr);
+                            debug!("Completed TCP connection handler for client {addr}");
                         });
                     }
                     Err(e) => {
-                        error!("Failed to accept TCP connection on {}: {}", socket_addr, e);
+                        error!("Failed to accept TCP connection on {socket_addr}: {e}");
                     }
                 }
             }
@@ -2525,8 +2471,8 @@ async fn main() -> EtchDnsResult<()> {
         match task.await {
             Ok(_) => {} // Task completed successfully
             Err(e) => {
-                error!("Task error: {}", e);
-                return Err(EtchDnsError::Other(format!("Task error: {}", e)));
+                error!("Task error: {e}");
+                return Err(EtchDnsError::Other(format!("Task error: {e}")));
             }
         }
     }

@@ -147,7 +147,7 @@ pub fn create_resolver_with_client_ip(
         Box::pin(async move {
             match client_query.process().await {
                 Ok(data) => Ok(data),
-                Err(e) => Err(DnsError::UpstreamError(format!("Error: {}", e))),
+                Err(e) => Err(DnsError::UpstreamError(format!("Error: {e}"))),
             }
         }) as BoxFuture<'static, _>
     }

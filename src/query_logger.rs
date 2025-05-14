@@ -44,11 +44,11 @@ impl QueryLogger {
                 let path_buf = PathBuf::from(path);
                 match OpenOptions::new().create(true).append(true).open(&path_buf) {
                     Ok(file) => {
-                        info!("Query logging enabled to file: {}", path);
+                        info!("Query logging enabled to file: {path}");
                         Some(file)
                     }
                     Err(e) => {
-                        error!("Failed to open query log file {}: {}", path, e);
+                        error!("Failed to open query log file {path}: {e}");
                         None
                     }
                 }
@@ -95,7 +95,7 @@ impl QueryLogger {
 
         // Add client address if enabled
         if include_client_addr {
-            log_line.push_str(&format!("{} ", client_addr));
+            log_line.push_str(&format!("{client_addr} "));
         }
 
         // Always include the domain name
@@ -117,7 +117,7 @@ impl QueryLogger {
         // Write to file
         if let Some(file) = &mut inner.file {
             if let Err(e) = file.write_all(log_line.as_bytes()) {
-                error!("Failed to write to query log file: {}", e);
+                error!("Failed to write to query log file: {e}");
 
                 // Try to reopen the file if it was closed or moved
                 if let Some(path) = &log_file_path {
@@ -129,7 +129,7 @@ impl QueryLogger {
                             // Try writing again
                             if let Some(file) = &mut inner.file {
                                 if let Err(e) = file.write_all(log_line.as_bytes()) {
-                                    error!("Failed to write to reopened query log file: {}", e);
+                                    error!("Failed to write to reopened query log file: {e}");
                                 }
                             }
                         }

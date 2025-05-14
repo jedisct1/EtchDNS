@@ -10,6 +10,12 @@ pub struct AllowedZones {
     zones: HashSet<String>,
 }
 
+impl Default for AllowedZones {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AllowedZones {
     /// Create a new empty AllowedZones
     #[allow(dead_code)]

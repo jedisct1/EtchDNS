@@ -66,7 +66,7 @@ async fn handle_doh_request(
                             .await
                         }
                         Err(e) => {
-                            error!("Failed to decode base64url DNS message: {}", e);
+                            error!("Failed to decode base64url DNS message: {e}");
                             let mut response = Response::new(Full::new(Bytes::from(
                                 "Bad Request: Invalid DNS message encoding",
                             )));
@@ -113,7 +113,7 @@ async fn handle_doh_request(
                         .await
                     }
                     Err(e) => {
-                        error!("Failed to read request body: {}", e);
+                        error!("Failed to read request body: {e}");
                         let mut response = Response::new(Full::new(Bytes::from(
                             "Bad Request: Failed to read request body",
                         )));
@@ -186,7 +186,7 @@ async fn process_dns_message(
                     // Check if the response contains an error
                     if let Some(error_msg) = response.error {
                         // Log the error
-                        error!("Error in DNS response: {}", error_msg);
+                        error!("Error in DNS response: {error_msg}");
                         let mut http_response =
                             Response::new(Full::new(Bytes::from("Internal Server Error")));
                         *http_response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
@@ -209,7 +209,7 @@ async fn process_dns_message(
                     };
 
                     // Add Cache-Control header
-                    let cache_control = format!("public, max-age={}", cache_ttl);
+                    let cache_control = format!("public, max-age={cache_ttl}");
                     if let Ok(value) = header::HeaderValue::from_str(&cache_control) {
                         http_response
                             .headers_mut()
@@ -230,11 +230,11 @@ async fn process_dns_message(
                         http_response.headers_mut().insert(header::EXPIRES, value);
                     }
 
-                    debug!("DoH response with cache TTL: {} seconds", cache_ttl);
+                    debug!("DoH response with cache TTL: {cache_ttl} seconds");
                     Ok(http_response)
                 }
                 Err(e) => {
-                    error!("Failed to receive response from query manager: {}", e);
+                    error!("Failed to receive response from query manager: {e}");
                     let mut http_response =
                         Response::new(Full::new(Bytes::from("Internal Server Error")));
                     *http_response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
@@ -243,7 +243,7 @@ async fn process_dns_message(
             }
         }
         Err(e) => {
-            error!("Failed to submit query to query manager: {}", e);
+            error!("Failed to submit query to query manager: {e}");
             let mut http_response = Response::new(Full::new(Bytes::from("Internal Server Error")));
             *http_response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             Ok(http_response)
@@ -265,7 +265,7 @@ pub async fn start_doh_server(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a TCP listener
     let listener = TcpListener::bind(addr).await?;
-    info!("DoH server listening on {}", addr);
+    info!("DoH server listening on {addr}");
 
     // Create a semaphore to limit concurrent connections
     let semaphore = Arc::new(Semaphore::new(max_connections));
@@ -293,8 +293,7 @@ pub async fn start_doh_server(
                 // Check if the client is allowed to make a connection
                 if !limiter.is_allowed(client_ip).await {
                     warn!(
-                        "Rate limit exceeded for DoH client {}, dropping connection",
-                        client_addr
+                        "Rate limit exceeded for DoH client {client_addr}, dropping connection"
                     );
                     return;
                 }
@@ -306,14 +305,13 @@ pub async fn start_doh_server(
                 Err(_) => {
                     // Too many connections, reject this one
                     warn!(
-                        "Too many DoH connections, rejecting connection from {}",
-                        client_addr
+                        "Too many DoH connections, rejecting connection from {client_addr}"
                     );
                     return;
                 }
             };
 
-            debug!("Accepted DoH connection from {}", client_addr);
+            debug!("Accepted DoH connection from {client_addr}");
 
             // Handle the connection
             let client_addr_clone = client_addr;
@@ -347,19 +345,18 @@ pub async fn start_doh_server(
                 Ok(result) => {
                     if let Err(err) = result {
                         // Log any errors
-                        error!("Error serving DoH connection from {}: {}", client_addr, err);
+                        error!("Error serving DoH connection from {client_addr}: {err}");
                     }
                 }
                 Err(_) => {
                     // Timeout occurred
                     error!(
-                        "DoH connection from {} timed out after {} seconds",
-                        client_addr, server_timeout
+                        "DoH connection from {client_addr} timed out after {server_timeout} seconds"
                     );
                 }
             }
 
-            debug!("Closed DoH connection from {}", client_addr);
+            debug!("Closed DoH connection from {client_addr}");
         });
     }
 }

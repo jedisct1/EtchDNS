@@ -33,7 +33,7 @@ pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DN
     // Validate that this is a valid DNS packet
     if let Err(e) = dns_parser::validate_dns_packet(packet) {
         // If validation fails, log the error and return without responding
-        error!("Invalid DNS packet from {}: {}", client_addr, e);
+        error!("Invalid DNS packet from {client_addr}: {e}");
         debug!("Dropping invalid DNS packet without response");
         return Err(e);
     }
@@ -43,10 +43,9 @@ pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DN
         Ok(key) => Ok(key),
         Err(e) => {
             error!(
-                "Failed to create DNSKey from packet from {}: {}",
-                client_addr, e
+                "Failed to create DNSKey from packet from {client_addr}: {e}"
             );
-            debug!("Error details: {:?}", e);
+            debug!("Error details: {e:?}");
             Err(e)
         }
     }
@@ -61,10 +60,7 @@ pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DN
 /// * `protocol` - The protocol used (e.g., "UDP", "TCP", "DoH")
 pub fn log_received_packet(packet_size: usize, client_addr: &str, protocol: &str) {
     log::debug!(
-        "Received {} bytes from {} client {}",
-        packet_size,
-        protocol,
-        client_addr
+        "Received {packet_size} bytes from {protocol} client {client_addr}"
     );
 }
 
@@ -85,7 +81,7 @@ pub fn log_received_packet(packet_size: usize, client_addr: &str, protocol: &str
 pub fn create_dns_response(query_data: &[u8], rcode: u8, log_msg: Option<&str>) -> Vec<u8> {
     // Log the message if provided
     if let Some(msg) = log_msg {
-        log::debug!("{}", msg);
+        log::debug!("{msg}");
     }
 
     // Create a response based on the query
@@ -93,12 +89,12 @@ pub fn create_dns_response(query_data: &[u8], rcode: u8, log_msg: Option<&str>) 
 
     // Set QR bit to 1 (response)
     if let Err(e) = dns_parser::set_qr(&mut response, true) {
-        log::error!("Failed to set QR bit: {}", e);
+        log::error!("Failed to set QR bit: {e}");
     }
 
     // Set the specified RCODE
     if let Err(e) = dns_parser::set_rcode(&mut response, rcode) {
-        log::error!("Failed to set RCODE: {}", e);
+        log::error!("Failed to set RCODE: {e}");
     }
 
     response

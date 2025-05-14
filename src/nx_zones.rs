@@ -10,6 +10,12 @@ pub struct NxZones {
     zones: HashSet<String>,
 }
 
+impl Default for NxZones {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NxZones {
     /// Create a new empty NxZones
     #[allow(dead_code)]

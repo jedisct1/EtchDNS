@@ -42,7 +42,8 @@ EtchDNS is a high-performance caching DNS proxy designed for security and reliab
 ### 🚀 Performance
 - **Efficient Caching**: Uses the SIEVE algorithm for optimal memory usage
 - **Query Aggregation**: Eliminates duplicate in-flight queries to reduce upstream load
-- **Smart Load Balancing**: Multiple strategies (fastest/p2/random) to distribute queries 
+- **Smart Load Balancing**: Multiple strategies (fastest/p2/random) to distribute queries
+- **EDNS-Client-Subnet**: Improves CDN and geolocation-based DNS responses
 - **Protocol Support**: UDP/TCP (standard DNS) and basic DoH (DNS-over-HTTP)
 - **Planned Protocols**: DNSCrypt, PQDNSCrypt, and Anonymized DNSCrypt for improved security and privacy
 
@@ -158,6 +159,7 @@ Key configuration sections include:
 - **Rate limiting**: Parameters for each protocol
 - **Caching**: Cache size and TTL settings
 - **Domain filtering**: Allowed and blocked zones
+- **EDNS-client-subnet**: Enable/disable and prefix length configuration
 - **Security**: Privilege dropping settings
 
 ### Domain Filtering
@@ -190,6 +192,19 @@ malware.example.net
 ```
 
 ## Advanced Features
+
+### EDNS-Client-Subnet Support
+
+EtchDNS supports EDNS-client-subnet (ECS) as defined in RFC 7871, which can improve CDN and geolocation-based DNS responses:
+
+```toml
+# EDNS-Client-Subnet configuration
+enable_ecs = true
+ecs_prefix_v4 = 24  # Send first 24 bits of IPv4 address (hide last 8 bits)
+ecs_prefix_v6 = 56  # Send first 56 bits of IPv6 address (hide last 72 bits)
+```
+
+When enabled, EtchDNS will include client IP information in upstream queries, allowing DNS providers to return optimized responses based on the client's location. The prefix lengths control how much of the client's IP address is shared with upstream servers, balancing performance with privacy.
 
 ### Remote Control API
 

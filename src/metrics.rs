@@ -162,8 +162,7 @@ pub async fn start_metrics_server(
     // Create a TCP listener
     let listener = TcpListener::bind(addr).await?;
     info!(
-        "Metrics server listening on {}, path: {}",
-        addr, metrics_path
+        "Metrics server listening on {addr}, path: {metrics_path}"
     );
 
     // Create a semaphore to limit concurrent connections
@@ -201,7 +200,7 @@ pub async fn start_metrics_server(
             // Process the connection
             if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                 // Log any errors
-                log::error!("Error serving connection: {}", err);
+                log::error!("Error serving connection: {err}");
             }
         });
     }

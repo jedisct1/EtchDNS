@@ -333,21 +333,19 @@ impl QueryManager {
                 _ => {
                     // For other values, return an empty response with an error message
                     log::debug!(
-                        "Hook returned unexpected value: {}, returning error response",
-                        hook_result
+                        "Hook returned unexpected value: {hook_result}, returning error response"
                     );
 
                     let (response_sender, receiver) = broadcast::channel(MAX_RECEIVERS);
                     let response = DnsResponse {
                         data: Vec::new(),
                         error: Some(format!(
-                            "Query processing interrupted by hook (code: {})",
-                            hook_result
+                            "Query processing interrupted by hook (code: {hook_result})"
                         )),
                     };
 
                     if let Err(e) = response_sender.send(response) {
-                        log::error!("Failed to send hook-interrupted response: {}", e);
+                        log::error!("Failed to send hook-interrupted response: {e}");
                     }
 
                     return Ok(receiver);
@@ -383,11 +381,10 @@ impl QueryManager {
                         if let Err(e) =
                             crate::dns_parser::change_ttl(&mut response_data, remaining_ttl)
                         {
-                            log::error!("Failed to update TTL in cached response: {}", e);
+                            log::error!("Failed to update TTL in cached response: {e}");
                         } else {
                             log::debug!(
-                                "Adjusted TTL in cached response to {} seconds",
-                                remaining_ttl
+                                "Adjusted TTL in cached response to {remaining_ttl} seconds"
                             );
                         }
                     }
@@ -399,7 +396,7 @@ impl QueryManager {
 
                     // Send the cached response
                     if let Err(e) = response_sender.send(response) {
-                        log::error!("Failed to send cached DNS response: {}", e);
+                        log::error!("Failed to send cached DNS response: {e}");
                     }
 
                     return Ok(receiver);
@@ -563,7 +560,7 @@ impl QueryManager {
                                     // Send the response to all receivers
                                     if let Err(e) = response_sender_clone.send(response.clone()) {
                                         // This can happen if all receivers have been dropped
-                                        log::error!("Failed to send invalid response error: {}", e);
+                                        log::error!("Failed to send invalid response error: {e}");
                                     }
 
                                     // Remove the query from the in-flight map and slab
@@ -622,25 +619,25 @@ impl QueryManager {
                                 // Send the response to all receivers
                                 if let Err(e) = response_sender_clone.send(response.clone()) {
                                     // This can happen if all receivers have been dropped
-                                    log::error!("Failed to send successful DNS response: {}", e);
+                                    log::error!("Failed to send successful DNS response: {e}");
                                 }
 
                                 response
                             }
                             Err(e) => {
                                 // Log the error
-                                log::error!("Failed to resolve DNS query: {}", e);
+                                log::error!("Failed to resolve DNS query: {e}");
 
                                 // Create an error response with empty data
                                 let response = DnsResponse {
                                     data: Vec::new(),
-                                    error: Some(format!("DNS query failed: {}", e)),
+                                    error: Some(format!("DNS query failed: {e}")),
                                 };
 
                                 // Send the response to all receivers
                                 if let Err(e) = response_sender_clone.send(response.clone()) {
                                     // This can happen if all receivers have been dropped
-                                    log::error!("Failed to send error DNS response: {}", e);
+                                    log::error!("Failed to send error DNS response: {e}");
                                 }
 
                                 response
@@ -649,7 +646,7 @@ impl QueryManager {
                     }
                     Err(_) => {
                         // The resolver timed out
-                        log::error!("DNS query timed out after {} seconds", server_timeout);
+                        log::error!("DNS query timed out after {server_timeout} seconds");
 
                         // Check if we should serve stale entries
                         if self_clone.serve_stale_grace_time > 0 {
@@ -677,8 +674,7 @@ impl QueryManager {
                                                 &query_slab_arc,
                                                 cache,
                                                 &format!(
-                                                    "timeout (expired {} seconds ago)",
-                                                    expired_ago
+                                                    "timeout (expired {expired_ago} seconds ago)"
                                                 ),
                                             )
                                             .await;
@@ -692,15 +688,14 @@ impl QueryManager {
                         let response = DnsResponse {
                             data: Vec::new(),
                             error: Some(format!(
-                                "DNS query timed out after {} seconds",
-                                server_timeout
+                                "DNS query timed out after {server_timeout} seconds"
                             )),
                         };
 
                         // Send the response to all receivers
                         if let Err(e) = response_sender_clone.send(response.clone()) {
                             // This can happen if all receivers have been dropped
-                            log::error!("Failed to send timeout DNS response: {}", e);
+                            log::error!("Failed to send timeout DNS response: {e}");
                         }
 
                         response
@@ -726,7 +721,7 @@ impl QueryManager {
                         );
                     }
                     Err(e) => {
-                        log::error!("Failed to remove query from slab: {}", e);
+                        log::error!("Failed to remove query from slab: {e}");
                         log::warn!("Map and slab may be out of sync due to slab removal error");
                     }
                 }
@@ -759,10 +754,10 @@ impl QueryManager {
                 );
             }
             Err(e) => {
-                log::error!("Failed to add query to slab: {}", e);
+                log::error!("Failed to add query to slab: {e}");
                 // Since we couldn't add to the slab, we won't add to the in-flight map either
                 // This ensures they stay in sync
-                return Err(DnsError::Other(format!("Failed to add query to slab: {}", e)).into());
+                return Err(DnsError::Other(format!("Failed to add query to slab: {e}")).into());
             }
         }
 
@@ -820,7 +815,7 @@ impl QueryManager {
                 crate::dns_processor::DNS_RCODE_REFUSED => "REFUSED",
                 _ => "unknown",
             };
-            log::error!("Failed to send {} response: {}", rcode_name, e);
+            log::error!("Failed to send {rcode_name} response: {e}");
         }
 
         (response_sender, receiver)
@@ -839,7 +834,7 @@ impl QueryManager {
         // Send the response to all receivers
         if let Err(e) = sender.send(response.clone()) {
             // This can happen if all receivers have been dropped
-            log::error!("Failed to send {} response: {}", log_prefix, e);
+            log::error!("Failed to send {log_prefix} response: {e}");
         }
 
         response
@@ -867,9 +862,9 @@ impl QueryManager {
 
         // Set the TTL to the configured stale TTL
         if let Err(e) = crate::dns_parser::change_ttl(&mut response_data, serve_stale_ttl) {
-            log::error!("Failed to update TTL in stale response: {}", e);
+            log::error!("Failed to update TTL in stale response: {e}");
         } else {
-            log::debug!("Set TTL in stale response to {} seconds", serve_stale_ttl);
+            log::debug!("Set TTL in stale response to {serve_stale_ttl} seconds");
         }
 
         // Create the stale response
@@ -887,7 +882,7 @@ impl QueryManager {
         // Send the response to all receivers
         if let Err(e) = response_sender.send(response.clone()) {
             // This can happen if all receivers have been dropped
-            log::error!("Failed to send stale DNS response after {}: {}", reason, e);
+            log::error!("Failed to send stale DNS response after {reason}: {e}");
         }
 
         // Remove the query from the in-flight map and slab
@@ -917,7 +912,7 @@ impl QueryManager {
 
         // Store the response in the cache
         cache.insert(key.clone(), cached_response);
-        log::debug!("Stored DNS response in cache with TTL: {} seconds", ttl);
+        log::debug!("Stored DNS response in cache with TTL: {ttl} seconds");
     }
 
     /// Helper function to remove a query from the in-flight map and slab
@@ -942,7 +937,7 @@ impl QueryManager {
                     );
                 }
                 Err(e) => {
-                    log::error!("Failed to remove query from slab: {}", e);
+                    log::error!("Failed to remove query from slab: {e}");
                     log::warn!("Map and slab may be out of sync due to slab removal error");
                 }
             }

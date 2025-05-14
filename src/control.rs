@@ -41,7 +41,7 @@ fn is_domain_in_zone(domain: &str, zone: &str) -> bool {
 
     // Check if domain is a subdomain of zone
     // Domain must end with .zone
-    normalized_domain.ends_with(&format!(".{}", normalized_zone))
+    normalized_domain.ends_with(&format!(".{normalized_zone}"))
 }
 
 /// Handle HTTP requests for the control API
@@ -75,7 +75,7 @@ async fn handle_request(
                 message: "Server is running".to_string(),
             };
             let json = serde_json::to_string(&response).unwrap_or_else(|e| {
-                error!("Failed to serialize API response: {}", e);
+                error!("Failed to serialize API response: {e}");
                 r#"{"success":false,"message":"Internal server error"}"#.to_string()
             });
 
@@ -94,14 +94,14 @@ async fn handle_request(
                 cache.clear();
 
                 let cache_size = cache.len();
-                info!("DNS cache cleared, current size: {}", cache_size);
+                info!("DNS cache cleared, current size: {cache_size}");
 
                 let response = ApiResponse {
                     success: true,
-                    message: format!("Cache cleared successfully. Current size: {}", cache_size),
+                    message: format!("Cache cleared successfully. Current size: {cache_size}"),
                 };
                 let json = serde_json::to_string(&response).unwrap_or_else(|e| {
-                    error!("Failed to serialize API response: {}", e);
+                    error!("Failed to serialize API response: {e}");
                     r#"{"success":false,"message":"Internal server error"}"#.to_string()
                 });
 
@@ -118,7 +118,7 @@ async fn handle_request(
                     message: "DNS cache not available".to_string(),
                 };
                 let json = serde_json::to_string(&response).unwrap_or_else(|e| {
-                    error!("Failed to serialize API response: {}", e);
+                    error!("Failed to serialize API response: {e}");
                     r#"{"success":false,"message":"Internal server error"}"#.to_string()
                 });
 
@@ -140,13 +140,13 @@ async fn handle_request(
                 let body_bytes = match http_body_util::BodyExt::collect(body).await {
                     Ok(collected) => collected.to_bytes(),
                     Err(e) => {
-                        error!("Failed to read request body: {}", e);
+                        error!("Failed to read request body: {e}");
                         let response = ApiResponse {
                             success: false,
-                            message: format!("Failed to read request body: {}", e),
+                            message: format!("Failed to read request body: {e}"),
                         };
                         let json = serde_json::to_string(&response).unwrap_or_else(|e| {
-                            error!("Failed to serialize API response: {}", e);
+                            error!("Failed to serialize API response: {e}");
                             r#"{"success":false,"message":"Internal server error"}"#.to_string()
                         });
 
@@ -165,13 +165,13 @@ async fn handle_request(
                 {
                     Ok(req) => req,
                     Err(e) => {
-                        error!("Failed to parse request body: {}", e);
+                        error!("Failed to parse request body: {e}");
                         let response = ApiResponse {
                             success: false,
-                            message: format!("Failed to parse request body: {}", e),
+                            message: format!("Failed to parse request body: {e}"),
                         };
                         let json = serde_json::to_string(&response).unwrap_or_else(|e| {
-                            error!("Failed to serialize API response: {}", e);
+                            error!("Failed to serialize API response: {e}");
                             r#"{"success":false,"message":"Internal server error"}"#.to_string()
                         });
 
@@ -198,19 +198,17 @@ async fn handle_request(
                 let removed_entries = initial_size - new_size;
 
                 info!(
-                    "Cleared {} entries for zone {} from DNS cache",
-                    removed_entries, zone
+                    "Cleared {removed_entries} entries for zone {zone} from DNS cache"
                 );
 
                 let response = ApiResponse {
                     success: true,
                     message: format!(
-                        "Cleared {} entries for zone {} from DNS cache. New size: {}",
-                        removed_entries, zone, new_size
+                        "Cleared {removed_entries} entries for zone {zone} from DNS cache. New size: {new_size}"
                     ),
                 };
                 let json = serde_json::to_string(&response).unwrap_or_else(|e| {
-                    error!("Failed to serialize API response: {}", e);
+                    error!("Failed to serialize API response: {e}");
                     r#"{"success":false,"message":"Internal server error"}"#.to_string()
                 });
 
@@ -227,7 +225,7 @@ async fn handle_request(
                     message: "DNS cache not available".to_string(),
                 };
                 let json = serde_json::to_string(&response).unwrap_or_else(|e| {
-                    error!("Failed to serialize API response: {}", e);
+                    error!("Failed to serialize API response: {e}");
                     r#"{"success":false,"message":"Internal server error"}"#.to_string()
                 });
 
@@ -270,14 +268,12 @@ pub async fn start_control_server(
     // Create a TCP listener
     let listener = TcpListener::bind(addr).await?;
     info!(
-        "Control server listening on {}, base path: {}",
-        addr, control_path
+        "Control server listening on {addr}, base path: {control_path}"
     );
 
     if dns_cache.is_some() {
         info!(
-            "DNS cache control API enabled at {}/cache/clear and {}/cache/clear/zone",
-            control_path, control_path
+            "DNS cache control API enabled at {control_path}/cache/clear and {control_path}/cache/clear/zone"
         );
     } else {
         warn!("DNS cache not available for control API");
@@ -305,14 +301,13 @@ pub async fn start_control_server(
                 Err(_) => {
                     // Too many connections, reject this one
                     warn!(
-                        "Too many control connections, rejecting connection from {}",
-                        client_addr
+                        "Too many control connections, rejecting connection from {client_addr}"
                     );
                     return;
                 }
             };
 
-            debug!("Accepted control connection from {}", client_addr);
+            debug!("Accepted control connection from {client_addr}");
 
             // Handle the connection
             let service = hyper::service::service_fn(move |req| {
@@ -325,12 +320,11 @@ pub async fn start_control_server(
             if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                 // Log any errors
                 error!(
-                    "Error serving control connection from {}: {}",
-                    client_addr, err
+                    "Error serving control connection from {client_addr}: {err}"
                 );
             }
 
-            debug!("Closed control connection from {}", client_addr);
+            debug!("Closed control connection from {client_addr}");
         });
     }
 }

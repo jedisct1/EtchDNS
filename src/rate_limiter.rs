@@ -112,8 +112,7 @@ impl RateLimiter {
             // Remove the first entry
             state.clients.remove(&first_key);
             log::debug!(
-                "Removed client {} from rate limiter due to capacity limit",
-                first_key
+                "Removed client {first_key} from rate limiter due to capacity limit"
             );
         }
     }

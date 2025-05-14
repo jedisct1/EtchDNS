@@ -31,6 +31,12 @@ pub struct Hooks {
     wasm_plugin: Option<Arc<Mutex<Plugin>>>,
 }
 
+impl Default for Hooks {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Hooks {
     /// Create a new Hooks instance
     pub fn new() -> Self {
@@ -115,7 +121,7 @@ impl Hooks {
                     client_ip,
                 };
                 let input_json = serde_json::to_string(&input).unwrap_or_else(|e| {
-                    log::warn!("Failed to serialize query input: {}", e);
+                    log::warn!("Failed to serialize query input: {e}");
                     String::new()
                 });
 
@@ -127,22 +133,18 @@ impl Hooks {
                             // Try to parse the result as an i32
                             if let Ok(result_code) = result_str.parse::<i32>() {
                                 log::debug!(
-                                    "WebAssembly hook_client_query_received for {} returned: {}",
-                                    query_name,
-                                    result_code
+                                    "WebAssembly hook_client_query_received for {query_name} returned: {result_code}"
                                 );
                                 return result_code;
                             } else {
                                 log::warn!(
-                                    "WebAssembly hook_client_query_received returned invalid result: {}",
-                                    result_str
+                                    "WebAssembly hook_client_query_received returned invalid result: {result_str}"
                                 );
                             }
                         }
                         Err(e) => {
                             log::warn!(
-                                "Error calling WebAssembly hook_client_query_received: {}",
-                                e
+                                "Error calling WebAssembly hook_client_query_received: {e}"
                             );
                         }
                     }

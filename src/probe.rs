@@ -89,13 +89,13 @@ impl ServerProber {
                     // Probe the server
                     match self.probe_server(addr).await {
                         Ok(response_time) => {
-                            debug!("Probe to {} completed in {:.2?}", addr, response_time);
+                            debug!("Probe to {addr} completed in {response_time:.2?}");
 
                             // Record the success in stats
                             self.stats.record_success(addr, response_time).await;
                         }
                         Err(e) => {
-                            warn!("Probe to {} failed: {}", addr, e);
+                            warn!("Probe to {addr} failed: {e}");
 
                             // Record the failure in stats
                             self.stats.record_failure(addr).await;
@@ -103,7 +103,7 @@ impl ServerProber {
                     }
                 }
                 Err(e) => {
-                    error!("Failed to parse server address {}: {}", server, e);
+                    error!("Failed to parse server address {server}: {e}");
                 }
             }
         }
@@ -116,7 +116,7 @@ impl ServerProber {
 
         // Create a UDP socket for the probe
         let socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
-            DnsError::UpstreamError(format!("Failed to bind socket for probe: {}", e))
+            DnsError::UpstreamError(format!("Failed to bind socket for probe: {e}"))
         })?;
 
         // Start timing
@@ -124,7 +124,7 @@ impl ServerProber {
 
         // Send the query
         socket.send_to(&query, server_addr).await.map_err(|e| {
-            DnsError::UpstreamError(format!("Failed to send probe to {}: {}", server_addr, e))
+            DnsError::UpstreamError(format!("Failed to send probe to {server_addr}: {e}"))
         })?;
 
         // Set up a buffer for the response
@@ -144,8 +144,7 @@ impl ServerProber {
                 // Validate the response
                 if let Err(e) = dns_parser::validate_dns_response(&buf[..len]) {
                     return Err(DnsError::UpstreamError(format!(
-                        "Invalid DNS response from {}: {}",
-                        server_addr, e
+                        "Invalid DNS response from {server_addr}: {e}"
                     ))
                     .into());
                 }
@@ -155,8 +154,7 @@ impl ServerProber {
             Ok(Err(e)) => {
                 // Socket error
                 Err(DnsError::UpstreamError(format!(
-                    "Failed to receive response from {}: {}",
-                    server_addr, e
+                    "Failed to receive response from {server_addr}: {e}"
                 ))
                 .into())
             }
@@ -203,14 +201,14 @@ pub async fn probe_server(server_addr: SocketAddr, timeout_secs: u64) -> EtchDns
     // Create a UDP socket for the probe
     let socket = UdpSocket::bind("0.0.0.0:0")
         .await
-        .map_err(|e| DnsError::UpstreamError(format!("Failed to bind socket for probe: {}", e)))?;
+        .map_err(|e| DnsError::UpstreamError(format!("Failed to bind socket for probe: {e}")))?;
 
     // Start timing
     let start_time = Instant::now();
 
     // Send the query
     socket.send_to(&query, server_addr).await.map_err(|e| {
-        DnsError::UpstreamError(format!("Failed to send probe to {}: {}", server_addr, e))
+        DnsError::UpstreamError(format!("Failed to send probe to {server_addr}: {e}"))
     })?;
 
     // Set up a buffer for the response
@@ -230,8 +228,7 @@ pub async fn probe_server(server_addr: SocketAddr, timeout_secs: u64) -> EtchDns
             // Validate the response
             if let Err(e) = dns_parser::validate_dns_response(&buf[..len]) {
                 return Err(DnsError::UpstreamError(format!(
-                    "Invalid DNS response from {}: {}",
-                    server_addr, e
+                    "Invalid DNS response from {server_addr}: {e}"
                 ))
                 .into());
             }
@@ -241,8 +238,7 @@ pub async fn probe_server(server_addr: SocketAddr, timeout_secs: u64) -> EtchDns
         Ok(Err(e)) => {
             // Socket error
             Err(DnsError::UpstreamError(format!(
-                "Failed to receive response from {}: {}",
-                server_addr, e
+                "Failed to receive response from {server_addr}: {e}"
             ))
             .into())
         }
