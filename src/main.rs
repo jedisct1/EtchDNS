@@ -1509,7 +1509,7 @@ async fn process_tcp_connection(
                                 }
                             }
                             Err(_) => {
-                                info!(
+                                debug!(
                                     "TCP connection from {addr} timed out after {server_timeout} seconds"
                                 );
                                 break;
@@ -1528,7 +1528,7 @@ async fn process_tcp_connection(
                 }
             }
             Err(_) => {
-                info!("TCP connection from {addr} timed out after {server_timeout} seconds");
+                debug!("TCP connection from {addr} timed out after {server_timeout} seconds");
                 break;
             }
         }
