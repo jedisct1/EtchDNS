@@ -1,0 +1,176 @@
+name: Release Binaries
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g., v0.1.0)"
+        required: true
+        default: "dev"
+
+jobs:
+  build-linux:
+    name: Build Linux (x86_64)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - features: ""
+            suffix: ""
+          - features: "hooks"
+            suffix: "-hooks"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build optimized binary
+        run: |
+          if [ "${{ matrix.features }}" == "" ]; then
+            cargo build --release --target x86_64-unknown-linux-gnu
+          else
+            cargo build --release --target x86_64-unknown-linux-gnu --features ${{ matrix.features }}
+          fi
+
+          # Strip the binary to reduce size
+          strip target/x86_64-unknown-linux-gnu/release/etchdns
+
+      - name: Package binary
+        run: |
+          VERSION="${{ github.event.release.tag_name || github.event.inputs.version }}"
+          PACKAGE_NAME="etchdns-${VERSION}-linux-x86_64${{ matrix.suffix }}"
+          mkdir -p "${PACKAGE_NAME}"
+          cp target/x86_64-unknown-linux-gnu/release/etchdns "${PACKAGE_NAME}/"
+          cp README.md "${PACKAGE_NAME}/"
+          cp LICENSE "${PACKAGE_NAME}/" || echo "No LICENSE file found"
+          cp config.toml "${PACKAGE_NAME}/" || echo "No config.toml file found"
+          cp allowed_zones.txt "${PACKAGE_NAME}/" || echo "No allowed_zones.txt file found"
+          cp nx_zones.txt "${PACKAGE_NAME}/" || echo "No nx_zones.txt file found"
+
+          # Create SHA256 checksum file
+          cd "${PACKAGE_NAME}"
+          sha256sum etchdns > SHA256SUMS.txt
+          cd ..
+
+          tar -czf "${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: etchdns-linux-x86_64${{ matrix.suffix }}
+          path: etchdns-*-linux-x86_64${{ matrix.suffix }}.tar.gz
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: etchdns-*-linux-x86_64${{ matrix.suffix }}.tar.gz
+
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+        include:
+          - target: x86_64-apple-darwin
+            arch: x86_64
+          - target: aarch64-apple-darwin
+            arch: arm64
+        features:
+          - ""
+          - "hooks"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build optimized binary
+        run: |
+          if [ "${{ matrix.features }}" == "" ]; then
+            cargo build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
+          fi
+
+          # Strip the binary to reduce size
+          strip target/${{ matrix.target }}/release/etchdns
+
+      - name: Package binary
+        run: |
+          VERSION="${{ github.event.release.tag_name || github.event.inputs.version }}"
+          SUFFIX=""
+          if [ "${{ matrix.features }}" != "" ]; then
+            SUFFIX="-${{ matrix.features }}"
+          fi
+          PACKAGE_NAME="etchdns-${VERSION}-macos-${{ matrix.arch }}${SUFFIX}"
+          mkdir -p "${PACKAGE_NAME}"
+          cp target/${{ matrix.target }}/release/etchdns "${PACKAGE_NAME}/"
+          cp README.md "${PACKAGE_NAME}/"
+          cp LICENSE "${PACKAGE_NAME}/" || echo "No LICENSE file found"
+          cp config.toml "${PACKAGE_NAME}/" || echo "No config.toml file found"
+          cp allowed_zones.txt "${PACKAGE_NAME}/" || echo "No allowed_zones.txt file found"
+          cp nx_zones.txt "${PACKAGE_NAME}/" || echo "No nx_zones.txt file found"
+
+          # Create SHA256 checksum file
+          cd "${PACKAGE_NAME}"
+          shasum -a 256 etchdns > SHA256SUMS.txt
+          cd ..
+
+          zip -r "${PACKAGE_NAME}.zip" "${PACKAGE_NAME}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: etchdns-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}
+          path: etchdns-*-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}.zip
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: etchdns-*-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}.zip
+
+  # Create a combined artifact with all binaries
+  combine-artifacts:
+    name: Combine Artifacts
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create combined archive
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          mkdir -p "etchdns-${VERSION}-all"
+          cp -r artifacts/*/* "etchdns-${VERSION}-all/"
+
+          # Create a combined SHA256SUMS file for all archives
+          echo "# SHA256 checksums for EtchDNS ${VERSION} release packages" > "etchdns-${VERSION}-SHA256SUMS.txt"
+          echo "# Generated on $(date -u)" >> "etchdns-${VERSION}-SHA256SUMS.txt"
+          echo "" >> "etchdns-${VERSION}-SHA256SUMS.txt"
+
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) | sort | while read file; do
+            sha256sum "$file" | sed 's|artifacts/[^/]*/||' >> "etchdns-${VERSION}-SHA256SUMS.txt"
+          done
+
+          tar -czf "etchdns-${VERSION}-all.tar.gz" "etchdns-${VERSION}-all"
+
+      - name: Upload combined artifact to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            etchdns-*-all.tar.gz
+            etchdns-*-SHA256SUMS.txt
