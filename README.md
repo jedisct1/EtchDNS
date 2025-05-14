@@ -33,6 +33,9 @@ EtchDNS is a high-performance caching DNS proxy designed for security and reliab
 - Service providers looking to offload DNS traffic from primary servers
 - Privacy-conscious users wanting greater control over their DNS resolution
 - Developers looking for an extensible DNS platform through WebAssembly
+- Secondary authoritative DNS server compatible with any provider (no zone transfer required)
+- Public or local DNS cache in front of a resolver
+- Intermediary between a [DNSCrypt server proxy](https://github.com/DNSCrypt/encrypted-dns-server) and a resolver
 
 ## Key Features
 
@@ -72,7 +75,7 @@ EtchDNS is a high-performance caching DNS proxy designed for security and reliab
 2. Edit a copy of the [`config.toml`](config.toml) configuration file
 3. Run EtchDNS:
 
-```bash
+```sh
 etchdns -c /path/to/config.toml
 ```
 
@@ -87,18 +90,18 @@ Reduce load on your primary DNS servers and ensure continuity of service:
 authoritative_dns = true
 ```
 
-EtchDNS acts as a secondary server for your zones, handling client requests while reducing load on your primary servers and providing protection against common attacks.
+EtchDNS acts as a secondary authoritative DNS server for your zones, handling client requests while reducing load on your primary servers and providing protection against common attacks. Compatible with any DNS provider without requiring zone transfers.
 
-### Local DNS Cache
+### Local or Public DNS Cache
 
-Improve performance and reliability for local devices:
+Improve performance and reliability for local devices or provide a public DNS service:
 
 ```toml
-# Local cache mode
+# Cache mode
 authoritative_dns = false
 ```
 
-Configure your devices to use EtchDNS as their DNS resolver. It will cache responses, distribute queries across multiple upstream servers, and make your DNS experience more reliable and secure.
+Configure your devices to use EtchDNS as their DNS resolver. It will cache responses, distribute queries across multiple upstream servers, and make your DNS experience more reliable and secure. Can be deployed as either a local network cache or as a public DNS service.
 
 ### DNS Firewall
 
@@ -110,6 +113,8 @@ nx_zones_file = "nx_zones.txt"
 ```
 
 Block malicious domains, ads, or unwanted content by configuring the `nx_zones.txt` file with domains that should return NXDOMAIN responses.
+
+EtchDNS can be used as an intermediary between a DNSCrypt server proxy (like https://github.com/DNSCrypt/encrypted-dns-server) and your resolver to reduce load and enhance reliability.
 
 ### Custom DNS Processing with WebAssembly
 
@@ -134,7 +139,7 @@ Download the latest release from the [releases page](https://github.com/jedisct1
 2. Clone this repository
 3. Build the release version:
 
-```bash
+```sh
 cargo build --release
 ```
 
@@ -265,7 +270,7 @@ EtchDNS includes several security features to protect both clients and upstream 
 
 Run the standard unit tests:
 
-```bash
+```sh
 cargo test
 ```
 
@@ -274,12 +279,12 @@ cargo test
 EtchDNS includes comprehensive fuzzing tests for the DNS parsers:
 
 1. Install cargo-fuzz:
-   ```bash
+   ```sh
    cargo install cargo-fuzz
    ```
 
 2. Run a specific fuzz target:
-   ```bash
+   ```sh
    cargo fuzz run validate_dns_packet
    ```
 
@@ -290,12 +295,12 @@ For more details on available targets, see the [fuzz/README.md](fuzz/README.md) 
 To build a WebAssembly extension for EtchDNS:
 
 1. Add the WebAssembly target to your Rust toolchain:
-   ```bash
+   ```sh
    rustup target add wasm32-unknown-unknown
    ```
 
 2. Build the example plugin or your own extension:
-   ```bash
+   ```sh
    cd hooks-plugin
    cargo build --target wasm32-unknown-unknown --release
    ```
@@ -303,7 +308,7 @@ To build a WebAssembly extension for EtchDNS:
 3. The compiled WebAssembly module will be available at `target/wasm32-unknown-unknown/release/hooks_plugin.wasm`
 
 4. Copy the WebAssembly module to your EtchDNS directory and update the configuration:
-   ```bash
+   ```sh
    cp target/wasm32-unknown-unknown/release/hooks_plugin.wasm /path/to/etchdns/hooks.wasm
    ```
 
