@@ -77,6 +77,15 @@ pub struct QueryManager {
 
     /// Query logger for logging DNS queries to a file
     query_logger: Option<Arc<crate::query_logger::QueryLogger>>,
+
+    /// Whether EDNS-client-subnet is enabled
+    enable_ecs: bool,
+
+    /// IPv4 prefix length for EDNS-client-subnet
+    ecs_prefix_v4: u8,
+
+    /// IPv6 prefix length for EDNS-client-subnet
+    ecs_prefix_v6: u8,
 }
 
 /// Represents a task handling a DNS query
@@ -108,6 +117,9 @@ impl QueryManager {
         serve_stale_grace_time: u64,
         serve_stale_ttl: u32,
         negative_cache_ttl: u32,
+        enable_ecs: bool,
+        ecs_prefix_v4: u8,
+        ecs_prefix_v6: u8,
     ) -> Self {
         Self {
             in_flight_queries: Arc::new(Mutex::new(HashMap::new())),
@@ -128,6 +140,9 @@ impl QueryManager {
             negative_cache_ttl,
             hooks: None,        // Initialize hooks as None, will be set later if needed
             query_logger: None, // Initialize query_logger as None, will be set later if needed
+            enable_ecs,
+            ecs_prefix_v4,
+            ecs_prefix_v6,
         }
     }
 
@@ -935,5 +950,20 @@ impl QueryManager {
             // Not found in the map
             log::warn!("Attempted to remove non-existent query from map");
         }
+    }
+
+    /// Get whether EDNS-client-subnet is enabled
+    pub fn get_enable_ecs(&self) -> bool {
+        self.enable_ecs
+    }
+
+    /// Get the IPv4 prefix length for EDNS-client-subnet
+    pub fn get_ecs_prefix_v4(&self) -> u8 {
+        self.ecs_prefix_v4
+    }
+
+    /// Get the IPv6 prefix length for EDNS-client-subnet
+    pub fn get_ecs_prefix_v6(&self) -> u8 {
+        self.ecs_prefix_v6
     }
 }

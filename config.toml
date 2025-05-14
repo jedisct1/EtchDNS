@@ -212,6 +212,25 @@ query_log_include_query_class = false
 # hooks_wasm_file = "hooks.wasm"
 
 #------------------------------------------------------------------------------
+# EDNS-Client-Subnet Configuration
+#------------------------------------------------------------------------------
+
+# Enable EDNS-client-subnet support (default: false)
+# If true, client IP information will be included in upstream queries
+# This can improve CDN and geolocation-based DNS responses
+enable_ecs = false
+
+# IPv4 prefix length to use for EDNS-client-subnet (default: 24)
+# This controls how much of the client's IPv4 address is sent to upstream servers
+# Recommended value: 24 (send first 24 bits, hiding the last 8 bits)
+ecs_prefix_v4 = 24
+
+# IPv6 prefix length to use for EDNS-client-subnet (default: 56)
+# This controls how much of the client's IPv6 address is sent to upstream servers
+# Recommended value: 56 (send first 56 bits, hiding the last 72 bits)
+ecs_prefix_v6 = 56
+
+#------------------------------------------------------------------------------
 # Security Configuration
 #------------------------------------------------------------------------------
 

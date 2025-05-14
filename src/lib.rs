@@ -43,6 +43,14 @@ pub struct ClientQuery {
     pub stats: Option<Arc<SharedStats>>,
     /// Load balancing strategy
     pub load_balancing_strategy: LoadBalancingStrategy,
+    /// Client IP address for EDNS-client-subnet
+    pub client_ip: Option<String>,
+    /// Whether EDNS-client-subnet is enabled
+    pub enable_ecs: bool,
+    /// IPv4 prefix length for EDNS-client-subnet
+    pub ecs_prefix_v4: u8,
+    /// IPv6 prefix length for EDNS-client-subnet
+    pub ecs_prefix_v6: u8,
 }
 
 impl ClientQuery {
@@ -69,6 +77,44 @@ impl ClientQuery {
             max_udp_response_size,
             stats: Some(stats),
             load_balancing_strategy,
+            client_ip: None,
+            enable_ecs: false,
+            ecs_prefix_v4: 24, // Default IPv4 prefix length
+            ecs_prefix_v6: 56, // Default IPv6 prefix length
+        }
+    }
+
+    /// Create a new ClientQuery with statistics tracking and client IP for EDNS-client-subnet
+    pub fn new_with_client_ip(
+        data: Vec<u8>,
+        upstream_servers: Vec<String>,
+        server_timeout: u64,
+        dns_packet_len_max: usize,
+        stats: Arc<SharedStats>,
+        load_balancing_strategy: LoadBalancingStrategy,
+        client_ip: String,
+        enable_ecs: bool,
+        ecs_prefix_v4: u8,
+        ecs_prefix_v6: u8,
+    ) -> Self {
+        // Extract the EDNS0 maximum datagram size from the query, if present
+        let max_udp_response_size = match dns_parser::extract_edns0_max_size(&data) {
+            Ok(Some(size)) => size as usize,
+            _ => dns_parser::DNS_MAX_UDP_PACKET_SIZE,
+        };
+
+        Self {
+            data,
+            upstream_servers,
+            server_timeout,
+            dns_packet_len_max,
+            max_udp_response_size,
+            stats: Some(stats),
+            load_balancing_strategy,
+            client_ip: Some(client_ip),
+            enable_ecs,
+            ecs_prefix_v4,
+            ecs_prefix_v6,
         }
     }
 

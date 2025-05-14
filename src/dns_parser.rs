@@ -36,6 +36,9 @@ pub const DNS_CLASS_ANY: u16 = 255;
 // DNSSEC related constants
 pub const DNS_FLAG_DO: u16 = 0x8000; // DNSSEC OK flag in OPT record
 
+// EDNS option codes
+pub const EDNS_OPTION_CLIENT_SUBNET: u16 = 8; // Client Subnet (RFC 7871)
+
 // DNS header flags
 const DNS_FLAGS_QR: u16 = 1u16 << 15; // Query/Response flag
 const DNS_FLAGS_TC: u16 = 1u16 << 9; // Truncation flag
@@ -744,6 +747,186 @@ pub fn add_edns_section(packet: &mut Vec<u8>, max_payload_size: u16) -> DnsResul
 
     // Add the OPT record
     packet.extend_from_slice(&opt_rr);
+
+    Ok(())
+}
+
+/// Adds an EDNS-client-subnet option to an existing OPT record in a DNS packet
+///
+/// This function adds an EDNS-client-subnet option to an existing OPT record in a DNS packet.
+/// If no OPT record exists, it will first add one with the specified maximum payload size.
+///
+/// # Arguments
+///
+/// * `packet` - The DNS packet to add the EDNS-client-subnet option to
+/// * `client_ip` - The client IP address to include in the subnet option
+/// * `prefix_v4` - The prefix length for IPv4 addresses (1-32)
+/// * `prefix_v6` - The prefix length for IPv6 addresses (1-128)
+/// * `max_payload_size` - The maximum payload size to use if adding a new OPT record
+///
+/// # Returns
+///
+/// * `Ok(())` - If the option was added successfully
+/// * `Err(e)` - If there was an error adding the option
+///
+/// # RFC 7871 - Client Subnet in DNS Queries
+///
+/// This implements the EDNS-client-subnet option as defined in RFC 7871.
+/// The option includes:
+/// - FAMILY: Address family (1 for IPv4, 2 for IPv6)
+/// - SOURCE PREFIX-LENGTH: Length of the prefix of the address to include
+/// - SCOPE PREFIX-LENGTH: Set to 0 in queries, indicates how much of the address was used in responses
+/// - ADDRESS: The truncated IP address (only including the prefix)
+pub fn add_edns_client_subnet(
+    packet: &mut Vec<u8>,
+    client_ip: &str,
+    prefix_v4: u8,
+    prefix_v6: u8,
+    max_payload_size: u16,
+) -> DnsResult<()> {
+    // Validate the client IP address
+    let ip_addr = match client_ip.parse::<std::net::IpAddr>() {
+        Ok(addr) => addr,
+        Err(_) => {
+            debug!(
+                "Invalid client IP address for EDNS-client-subnet: {}",
+                client_ip
+            );
+            return Ok(()); // Silently ignore invalid IP addresses
+        }
+    };
+
+    // Determine if we need to add an OPT record first
+    let mut has_opt_record = false;
+    let mut opt_record_offset = 0;
+    let mut opt_record_rdlen_offset = 0;
+
+    // Skip the question section
+    let mut offset = skip_name(packet, DNS_OFFSET_QUESTION)?;
+    offset += 4; // Skip QTYPE and QCLASS
+
+    // Skip answer and authority sections
+    let (ancount, nscount, arcount) = (ancount(packet), nscount(packet), arcount(packet));
+    offset = traverse_rrs(packet, offset, ancount as usize + nscount as usize, |_| {
+        Ok(())
+    })?;
+
+    // Check additional records for OPT
+    traverse_rrs(packet, offset, arcount as usize, |rr_offset| {
+        let qtype = BigEndian::read_u16(&packet[rr_offset..]);
+        if qtype == DNS_TYPE_OPT {
+            has_opt_record = true;
+            opt_record_offset = rr_offset;
+            opt_record_rdlen_offset = rr_offset + 8; // RDLEN is at offset 8 in the OPT record
+        }
+        Ok(())
+    })?;
+
+    // If no OPT record exists, add one
+    if !has_opt_record {
+        add_edns_section(packet, max_payload_size)?;
+
+        // Now find the OPT record we just added
+        offset = skip_name(packet, DNS_OFFSET_QUESTION)?;
+        offset += 4; // Skip QTYPE and QCLASS
+
+        // Skip answer and authority sections
+        offset = traverse_rrs(packet, offset, ancount as usize + nscount as usize, |_| {
+            Ok(())
+        })?;
+
+        // Find the OPT record in the additional section
+        traverse_rrs(packet, offset, arcount as usize + 1, |rr_offset| {
+            let qtype = BigEndian::read_u16(&packet[rr_offset..]);
+            if qtype == DNS_TYPE_OPT {
+                has_opt_record = true;
+                opt_record_offset = rr_offset;
+                opt_record_rdlen_offset = rr_offset + 8; // RDLEN is at offset 8 in the OPT record
+            }
+            Ok(())
+        })?;
+    }
+
+    // If we still don't have an OPT record, something went wrong
+    if !has_opt_record {
+        return Err(DnsError::InvalidEdns(
+            "Failed to add OPT record".to_string(),
+        ));
+    }
+
+    // Get the current RDLEN
+    let rdlen_offset = opt_record_rdlen_offset;
+    let rdlen = BigEndian::read_u16(&packet[rdlen_offset..rdlen_offset + 2]) as usize;
+    let rdata_offset = rdlen_offset + 2;
+
+    // Create the EDNS-client-subnet option
+    let mut ecs_option = Vec::new();
+
+    // Determine family, source prefix length, and address bytes based on IP type
+    let (family, source_prefix_length, address_bytes) = match ip_addr {
+        std::net::IpAddr::V4(ipv4) => {
+            let bytes = ipv4.octets();
+            (1u16, prefix_v4, bytes.to_vec())
+        }
+        std::net::IpAddr::V6(ipv6) => {
+            let bytes = ipv6.octets();
+            (2u16, prefix_v6, bytes.to_vec())
+        }
+    };
+
+    // Calculate how many bytes we need to represent the prefix
+    let address_byte_count = (source_prefix_length as usize + 7) / 8;
+
+    // Truncate the address bytes to the specified prefix length
+    let mut truncated_address = address_bytes[..address_byte_count].to_vec();
+
+    // If we're not using all bits in the last byte, mask it
+    if address_byte_count > 0 && source_prefix_length % 8 != 0 {
+        let last_byte_index = address_byte_count - 1;
+        let mask = 0xffu8 << (8 - (source_prefix_length % 8));
+        truncated_address[last_byte_index] &= mask;
+    }
+
+    // Build the option
+    // OPTION-CODE (CLIENT-SUBNET)
+    ecs_option.push((EDNS_OPTION_CLIENT_SUBNET >> 8) as u8);
+    ecs_option.push(EDNS_OPTION_CLIENT_SUBNET as u8);
+
+    // OPTION-LENGTH
+    let option_length = 4 + truncated_address.len(); // 2 for family, 1 for source prefix length, 1 for scope prefix length, plus address bytes
+    ecs_option.push((option_length >> 8) as u8);
+    ecs_option.push(option_length as u8);
+
+    // FAMILY
+    ecs_option.push((family >> 8) as u8);
+    ecs_option.push(family as u8);
+
+    // SOURCE PREFIX-LENGTH
+    ecs_option.push(source_prefix_length);
+
+    // SCOPE PREFIX-LENGTH (always 0 in queries)
+    ecs_option.push(0);
+
+    // ADDRESS
+    ecs_option.extend_from_slice(&truncated_address);
+
+    // Make sure the packet won't be too large
+    if DNS_MAX_PACKET_SIZE - packet.len() < ecs_option.len() {
+        return Err(DnsError::PacketTooLarge {
+            size: packet.len(),
+            max_size: DNS_MAX_PACKET_SIZE,
+        });
+    }
+
+    // Update the RDLEN in the OPT record
+    let new_rdlen = rdlen + ecs_option.len();
+    BigEndian::write_u16(
+        &mut packet[rdlen_offset..rdlen_offset + 2],
+        new_rdlen as u16,
+    );
+
+    // Add the option to the end of the OPT record
+    packet.splice(rdata_offset + rdlen..rdata_offset + rdlen, ecs_option);
 
     Ok(())
 }
@@ -1520,4 +1703,115 @@ mod tests {
             assert!(!is_valid, "Label '{}' should be invalid", label);
         }
     }
+}
+
+/// Structure to hold EDNS-client-subnet information
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct EdnsClientSubnet {
+    /// Address family (1 for IPv4, 2 for IPv6)
+    pub family: u16,
+    /// Source prefix length
+    pub source_prefix_length: u8,
+    /// Scope prefix length
+    pub scope_prefix_length: u8,
+    /// IP address (truncated to the prefix length)
+    pub address: Vec<u8>,
+}
+
+/// Extracts EDNS-client-subnet information from a DNS packet
+///
+/// This function extracts EDNS-client-subnet information from a DNS packet.
+/// It searches for an OPT record and then looks for the EDNS-client-subnet option.
+///
+/// # Arguments
+///
+/// * `packet` - The DNS packet to extract EDNS-client-subnet information from
+///
+/// # Returns
+///
+/// * `Ok(Some(EdnsClientSubnet))` - If EDNS-client-subnet information was found
+/// * `Ok(None)` - If no EDNS-client-subnet information was found
+/// * `Err(e)` - If there was an error extracting the information
+#[allow(dead_code)]
+pub fn extract_edns_client_subnet(packet: &[u8]) -> DnsResult<Option<EdnsClientSubnet>> {
+    // Skip the question section
+    let mut offset = skip_name(packet, DNS_OFFSET_QUESTION)?;
+    offset += 4; // Skip QTYPE and QCLASS
+
+    // Skip answer and authority sections
+    let (ancount, nscount, arcount) = (ancount(packet), nscount(packet), arcount(packet));
+    offset = traverse_rrs(packet, offset, ancount as usize + nscount as usize, |_| {
+        Ok(())
+    })?;
+
+    // Check additional records for OPT
+    let mut ecs_info = None;
+    traverse_rrs(packet, offset, arcount as usize, |rr_offset| {
+        let qtype = BigEndian::read_u16(&packet[rr_offset..]);
+        if qtype == DNS_TYPE_OPT {
+            // Found OPT record, now look for EDNS-client-subnet option
+            let rdlen = BigEndian::read_u16(&packet[rr_offset + 8..rr_offset + 10]) as usize;
+            let rdata_offset = rr_offset + 10;
+            let rdata_end = rdata_offset + rdlen;
+
+            // Parse EDNS options
+            let mut option_offset = rdata_offset;
+            while option_offset < rdata_end {
+                if option_offset + 4 > rdata_end {
+                    // Not enough space for option code and length
+                    break;
+                }
+
+                let option_code = BigEndian::read_u16(&packet[option_offset..option_offset + 2]);
+                let option_len =
+                    BigEndian::read_u16(&packet[option_offset + 2..option_offset + 4]) as usize;
+                option_offset += 4;
+
+                if option_offset + option_len > rdata_end {
+                    // Option length exceeds RDATA
+                    break;
+                }
+
+                if option_code == EDNS_OPTION_CLIENT_SUBNET {
+                    // Found EDNS-client-subnet option
+                    if option_len < 4 {
+                        // Not enough data for family, source prefix length, and scope prefix length
+                        break;
+                    }
+
+                    let family = BigEndian::read_u16(&packet[option_offset..option_offset + 2]);
+                    let source_prefix_length = packet[option_offset + 2];
+                    let scope_prefix_length = packet[option_offset + 3];
+                    let address_offset = option_offset + 4;
+                    let address_len = option_len - 4;
+
+                    // Calculate expected address length based on prefix length
+                    let expected_address_len = (source_prefix_length as usize + 7) / 8;
+                    if address_len < expected_address_len {
+                        // Not enough address bytes
+                        break;
+                    }
+
+                    // Extract the address
+                    let address =
+                        packet[address_offset..address_offset + expected_address_len].to_vec();
+
+                    ecs_info = Some(EdnsClientSubnet {
+                        family,
+                        source_prefix_length,
+                        scope_prefix_length,
+                        address,
+                    });
+
+                    break;
+                }
+
+                option_offset += option_len;
+            }
+        }
+        Ok(())
+    })?;
+
+    Ok(ecs_info)
 }

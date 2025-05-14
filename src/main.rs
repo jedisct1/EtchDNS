@@ -243,6 +243,23 @@ struct Config {
     /// If not set, chroot will not be performed
     #[serde(default)]
     chroot: Option<String>,
+
+    /// Enable EDNS-client-subnet support
+    /// If true, client IP information will be included in upstream queries
+    #[serde(default = "default_enable_ecs")]
+    enable_ecs: bool,
+
+    /// IPv4 prefix length to use for EDNS-client-subnet
+    /// This controls how much of the client's IPv4 address is sent to upstream servers
+    /// Recommended values: 24 (send first 24 bits, hiding the last 8 bits)
+    #[serde(default = "default_ecs_prefix_v4")]
+    ecs_prefix_v4: u8,
+
+    /// IPv6 prefix length to use for EDNS-client-subnet
+    /// This controls how much of the client's IPv6 address is sent to upstream servers
+    /// Recommended values: 56 (send first 56 bits, hiding the last 72 bits)
+    #[serde(default = "default_ecs_prefix_v6")]
+    ecs_prefix_v6: u8,
 }
 
 // Default values for configuration
@@ -386,6 +403,18 @@ fn default_query_log_include_query_class() -> bool {
     false // Don't include query class in query log by default
 }
 
+fn default_enable_ecs() -> bool {
+    false // EDNS-client-subnet is disabled by default
+}
+
+fn default_ecs_prefix_v4() -> u8 {
+    24 // Send first 24 bits of IPv4 address (hide last 8 bits)
+}
+
+fn default_ecs_prefix_v6() -> u8 {
+    56 // Send first 56 bits of IPv6 address (hide last 72 bits)
+}
+
 impl Config {
     /// Load configuration from a TOML file
     fn from_file(path: &PathBuf) -> EtchDnsResult<Self> {
@@ -502,6 +531,22 @@ impl Config {
             ));
         }
 
+        // Validate EDNS-client-subnet parameters
+        if self.enable_ecs {
+            if self.ecs_prefix_v4 > 32 {
+                return Err(EtchDnsError::Other(format!(
+                    "Invalid ecs_prefix_v4: {}. Must be between 0 and 32",
+                    self.ecs_prefix_v4
+                )));
+            }
+            if self.ecs_prefix_v6 > 128 {
+                return Err(EtchDnsError::Other(format!(
+                    "Invalid ecs_prefix_v6: {}. Must be between 0 and 128",
+                    self.ecs_prefix_v6
+                )));
+            }
+        }
+
         // Validate DoH rate limiting parameters
         if self.doh_rate_limit_window > 0 && self.doh_rate_limit_count == 0 {
             return Err(EtchDnsError::Other(
@@ -599,6 +644,14 @@ struct ClientQuery {
     stats: Option<Arc<SharedStats>>,
     /// Load balancing strategy
     load_balancing_strategy: load_balancer::LoadBalancingStrategy,
+    /// Client IP address for EDNS-client-subnet
+    client_ip: Option<String>,
+    /// Whether EDNS-client-subnet is enabled
+    enable_ecs: bool,
+    /// IPv4 prefix length for EDNS-client-subnet
+    ecs_prefix_v4: u8,
+    /// IPv6 prefix length for EDNS-client-subnet
+    ecs_prefix_v6: u8,
 }
 
 impl ClientQuery {
@@ -625,6 +678,44 @@ impl ClientQuery {
             max_udp_response_size,
             stats: Some(stats),
             load_balancing_strategy,
+            client_ip: None,
+            enable_ecs: false, // Default to disabled, will be set by the caller
+            ecs_prefix_v4: default_ecs_prefix_v4(),
+            ecs_prefix_v6: default_ecs_prefix_v6(),
+        }
+    }
+
+    /// Create a new ClientQuery with statistics tracking and client IP for EDNS-client-subnet
+    fn new_with_client_ip(
+        data: Vec<u8>,
+        upstream_servers: Vec<String>,
+        server_timeout: u64,
+        dns_packet_len_max: usize,
+        stats: Arc<SharedStats>,
+        load_balancing_strategy: load_balancer::LoadBalancingStrategy,
+        client_ip: String,
+        enable_ecs: bool,
+        ecs_prefix_v4: u8,
+        ecs_prefix_v6: u8,
+    ) -> Self {
+        // Extract the EDNS0 maximum datagram size from the query, if present
+        let max_udp_response_size = match dns_parser::extract_edns0_max_size(&data) {
+            Ok(Some(size)) => size as usize,
+            _ => dns_parser::DNS_MAX_UDP_PACKET_SIZE,
+        };
+
+        Self {
+            data,
+            upstream_servers,
+            server_timeout,
+            dns_packet_len_max,
+            max_udp_response_size,
+            stats: Some(stats),
+            load_balancing_strategy,
+            client_ip: Some(client_ip),
+            enable_ecs,
+            ecs_prefix_v4,
+            ecs_prefix_v6,
         }
     }
 
@@ -675,6 +766,32 @@ impl ClientQuery {
                 "Set EDNS maximum payload size to {} bytes",
                 self.dns_packet_len_max
             );
+
+            // Add EDNS-client-subnet if enabled and we have a client IP
+            if self.enable_ecs {
+                if let Some(client_ip) = &self.client_ip {
+                    match dns_parser::add_edns_client_subnet(
+                        &mut query_data,
+                        client_ip,
+                        self.ecs_prefix_v4,
+                        self.ecs_prefix_v6,
+                        self.dns_packet_len_max as u16,
+                    ) {
+                        Ok(_) => {
+                            debug!(
+                                "Added EDNS-client-subnet for client IP {} with prefix lengths IPv4:{}/IPv6:{}",
+                                client_ip, self.ecs_prefix_v4, self.ecs_prefix_v6
+                            );
+                        }
+                        Err(e) => {
+                            error!("Failed to add EDNS-client-subnet: {}", e);
+                            debug!("Continuing without EDNS-client-subnet");
+                        }
+                    }
+                } else {
+                    debug!("EDNS-client-subnet is enabled but no client IP is available");
+                }
+            }
         }
 
         // Generate a random transaction ID using a simpler approach
@@ -1146,14 +1263,26 @@ impl UDPClient {
         // Get the load balancing strategy from the query manager
         let load_balancing_strategy = query_manager.get_load_balancing_strategy();
 
-        // Create the client query
-        let query = ClientQuery::new(
+        // Get the ECS configuration from the query manager
+        let enable_ecs = query_manager.get_enable_ecs();
+        let ecs_prefix_v4 = query_manager.get_ecs_prefix_v4();
+        let ecs_prefix_v6 = query_manager.get_ecs_prefix_v6();
+
+        // Extract client IP (without port) for EDNS-client-subnet
+        let client_ip = addr.ip().to_string();
+
+        // Create the client query with client IP for EDNS-client-subnet
+        let query = ClientQuery::new_with_client_ip(
             data,
             upstream_servers,
             server_timeout,
             dns_packet_len_max,
             stats,
             load_balancing_strategy,
+            client_ip,
+            enable_ecs,
+            ecs_prefix_v4,
+            ecs_prefix_v6,
         );
 
         Self {
@@ -1186,14 +1315,26 @@ impl TCPClient {
         // Get the load balancing strategy from the query manager
         let load_balancing_strategy = query_manager.get_load_balancing_strategy();
 
-        // Create the client query
-        let query = ClientQuery::new(
+        // Get the ECS configuration from the query manager
+        let enable_ecs = query_manager.get_enable_ecs();
+        let ecs_prefix_v4 = query_manager.get_ecs_prefix_v4();
+        let ecs_prefix_v6 = query_manager.get_ecs_prefix_v6();
+
+        // Extract client IP (without port) for EDNS-client-subnet
+        let client_ip = addr.ip().to_string();
+
+        // Create the client query with client IP for EDNS-client-subnet
+        let query = ClientQuery::new_with_client_ip(
             data,
             upstream_servers,
             server_timeout,
             dns_packet_len_max,
             stats,
             load_balancing_strategy,
+            client_ip,
+            enable_ecs,
+            ecs_prefix_v4,
+            ecs_prefix_v6,
         );
 
         Self {
@@ -1444,13 +1585,29 @@ trait DnsQueryProcessor {
         // Get the client query ID once to avoid multiple calls
         let client_query_id = dns_parser::tid(query_data);
 
+        // Extract client IP (without port) for EDNS-client-subnet
+        let client_ip = client_addr
+            .split(':')
+            .next()
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Get ECS configuration from query_manager
+        let enable_ecs = query_manager.get_enable_ecs();
+        let ecs_prefix_v4 = query_manager.get_ecs_prefix_v4();
+        let ecs_prefix_v6 = query_manager.get_ecs_prefix_v6();
+
         // Create a resolver function for this query
-        let resolver = resolver::create_resolver(
+        let resolver = resolver::create_resolver_with_client_ip(
             upstream_servers.to_vec(),
             server_timeout,
             dns_packet_len_max,
             stats,
             load_balancing_strategy,
+            client_ip,
+            enable_ecs,
+            ecs_prefix_v4,
+            ecs_prefix_v6,
         );
 
         // Submit the query to the query manager with client address
@@ -1891,6 +2048,9 @@ async fn main() -> EtchDnsResult<()> {
         config.serve_stale_grace_time,
         config.serve_stale_ttl,
         config.negative_cache_ttl,
+        config.enable_ecs,
+        config.ecs_prefix_v4,
+        config.ecs_prefix_v6,
     );
 
     // Set the DNS cache in the query manager

@@ -114,6 +114,11 @@ pub enum DnsError {
     #[error("Invalid EDNS data: {0}")]
     InvalidEdns(String),
 
+    /// Error occurred due to invalid EDNS-client-subnet data
+    #[error("Invalid EDNS-client-subnet data: {0}")]
+    #[allow(dead_code)]
+    InvalidEdnsClientSubnet(String),
+
     /// Error occurred while communicating with upstream DNS server
     #[error("Upstream DNS server error: {0}")]
     UpstreamError(String),
