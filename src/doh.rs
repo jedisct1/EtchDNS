@@ -6,12 +6,14 @@ use base64::{Engine as _, engine::general_purpose};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use http_body_util::Full;
+use httpdate;
 use hyper::{Method, Request, Response, StatusCode, header, server::conn::http1};
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info, warn};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
@@ -193,11 +195,43 @@ async fn process_dns_message(
                     }
 
                     // Create a response with the DNS message
-                    let mut http_response = Response::new(Full::new(Bytes::from(response.data)));
+                    let mut http_response =
+                        Response::new(Full::new(Bytes::from(response.data.clone())));
                     http_response.headers_mut().insert(
                         header::CONTENT_TYPE,
                         header::HeaderValue::from_static("application/dns-message"),
                     );
+
+                    // Add HTTP caching headers
+                    // Extract the minimum TTL from the DNS response, with a 1 second minimum
+                    let cache_ttl = match crate::dns_parser::extract_min_ttl(&response.data) {
+                        Ok(Some(ttl)) => std::cmp::max(ttl, 1), // Minimum of 1 second
+                        _ => 10, // Default to 10 seconds if no TTL found
+                    };
+
+                    // Add Cache-Control header
+                    let cache_control = format!("public, max-age={}", cache_ttl);
+                    if let Ok(value) = header::HeaderValue::from_str(&cache_control) {
+                        http_response
+                            .headers_mut()
+                            .insert(header::CACHE_CONTROL, value);
+                    }
+
+                    // Add Expires header
+                    let now = std::time::UNIX_EPOCH
+                        + std::time::Duration::from_secs(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        );
+                    let expiry_time = now + std::time::Duration::from_secs(cache_ttl as u64);
+                    let expiry_http_date = httpdate::fmt_http_date(expiry_time);
+                    if let Ok(value) = header::HeaderValue::from_str(&expiry_http_date) {
+                        http_response.headers_mut().insert(header::EXPIRES, value);
+                    }
+
+                    debug!("DoH response with cache TTL: {} seconds", cache_ttl);
                     Ok(http_response)
                 }
                 Err(e) => {
