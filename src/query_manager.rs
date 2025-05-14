@@ -349,7 +349,7 @@ impl QueryManager {
                     };
 
                     if let Err(e) = response_sender.send(response) {
-                        log::error!("Failed to send hook-interrupted response: {e}");
+                        log::debug!("Failed to send hook-interrupted response: {e}");
                     }
 
                     return Ok(receiver);
@@ -385,7 +385,7 @@ impl QueryManager {
                         if let Err(e) =
                             crate::dns_parser::change_ttl(&mut response_data, remaining_ttl)
                         {
-                            log::error!("Failed to update TTL in cached response: {e}");
+                            log::debug!("Failed to update TTL in cached response: {e}");
                         } else {
                             log::debug!(
                                 "Adjusted TTL in cached response to {remaining_ttl} seconds"
@@ -406,7 +406,7 @@ impl QueryManager {
 
                     // Send the cached response
                     if let Err(e) = response_sender.send(response) {
-                        log::error!("Failed to send cached DNS response: {e}");
+                        log::debug!("Failed to send cached DNS response: {e}");
                     }
 
                     return Ok(receiver);
@@ -570,7 +570,7 @@ impl QueryManager {
                                     // Send the response to all receivers
                                     if let Err(e) = response_sender_clone.send(response.clone()) {
                                         // This can happen if all receivers have been dropped
-                                        log::error!("Failed to send invalid response error: {e}");
+                                        log::debug!("Failed to send invalid response error: {e}");
                                     }
 
                                     // Remove the query from the in-flight map and slab
@@ -638,14 +638,14 @@ impl QueryManager {
                                 // Send the response to all receivers
                                 if let Err(e) = response_sender_clone.send(response.clone()) {
                                     // This can happen if all receivers have been dropped
-                                    log::error!("Failed to send successful DNS response: {e}");
+                                    log::debug!("Failed to send successful DNS response: {e}");
                                 }
 
                                 response
                             }
                             Err(e) => {
                                 // Log the error
-                                log::error!("Failed to resolve DNS query: {e}");
+                                log::debug!("Failed to resolve DNS query: {e}");
 
                                 // Create an error response with empty data
                                 let response = DnsResponse {
@@ -656,7 +656,7 @@ impl QueryManager {
                                 // Send the response to all receivers
                                 if let Err(e) = response_sender_clone.send(response.clone()) {
                                     // This can happen if all receivers have been dropped
-                                    log::error!("Failed to send error DNS response: {e}");
+                                    log::debug!("Failed to send error DNS response: {e}");
                                 }
 
                                 response
@@ -665,7 +665,7 @@ impl QueryManager {
                     }
                     Err(_) => {
                         // The resolver timed out
-                        log::error!("DNS query timed out after {server_timeout} seconds");
+                        log::debug!("DNS query timed out after {server_timeout} seconds");
 
                         // Check if we should serve stale entries
                         if self_clone.serve_stale_grace_time > 0 {
@@ -714,7 +714,7 @@ impl QueryManager {
                         // Send the response to all receivers
                         if let Err(e) = response_sender_clone.send(response.clone()) {
                             // This can happen if all receivers have been dropped
-                            log::error!("Failed to send timeout DNS response: {e}");
+                            log::debug!("Failed to send timeout DNS response: {e}");
                         }
 
                         response
@@ -839,7 +839,7 @@ impl QueryManager {
                 crate::dns_processor::DNS_RCODE_REFUSED => "REFUSED",
                 _ => "unknown",
             };
-            log::error!("Failed to send {rcode_name} response: {e}");
+            log::debug!("Failed to send {rcode_name} response: {e}");
         }
 
         (response_sender, receiver)
@@ -858,7 +858,7 @@ impl QueryManager {
         // Send the response to all receivers
         if let Err(e) = sender.send(response.clone()) {
             // This can happen if all receivers have been dropped
-            log::error!("Failed to send {log_prefix} response: {e}");
+            log::debug!("Failed to send {log_prefix} response: {e}");
         }
 
         response
@@ -886,7 +886,7 @@ impl QueryManager {
 
         // Set the TTL to the configured stale TTL
         if let Err(e) = crate::dns_parser::change_ttl(&mut response_data, serve_stale_ttl) {
-            log::error!("Failed to update TTL in stale response: {e}");
+            log::debug!("Failed to update TTL in stale response: {e}");
         } else {
             log::debug!("Set TTL in stale response to {serve_stale_ttl} seconds");
         }
@@ -913,7 +913,7 @@ impl QueryManager {
         // Send the response to all receivers
         if let Err(e) = response_sender.send(response.clone()) {
             // This can happen if all receivers have been dropped
-            log::error!("Failed to send stale DNS response after {reason}: {e}");
+            log::debug!("Failed to send stale DNS response after {reason}: {e}");
         }
 
         // Remove the query from the in-flight map and slab

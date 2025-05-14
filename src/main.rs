@@ -741,7 +741,7 @@ impl ClientQuery {
         // Validate that this is a valid DNS packet
         if let Err(e) = dns_parser::validate_dns_packet(&self.data) {
             // If validation fails, log the error and return without responding
-            error!("Invalid DNS packet: {e}");
+            debug!("Invalid DNS packet: {e}");
             debug!("Dropping invalid DNS packet without response");
             return Err(DnsError::InvalidPacket(format!("Invalid DNS packet: {e}")).into());
         }
@@ -1029,7 +1029,7 @@ async fn process_response(
     // Verify the transaction ID in the response
     let response_tid = dns_parser::tid(response_data);
     if response_tid != expected_tid {
-        error!("Transaction ID mismatch: expected {expected_tid}, got {response_tid}");
+        debug!("Transaction ID mismatch: expected {expected_tid}, got {response_tid}");
         return Err(
             DnsError::UpstreamError("Transaction ID mismatch in response".to_string()).into(),
         );
@@ -1039,7 +1039,7 @@ async fn process_response(
 
     // Validate that the response is a valid DNS response
     if let Err(e) = dns_parser::validate_dns_response(response_data) {
-        error!("Invalid DNS response: {e}");
+        debug!("Invalid DNS response: {e}");
         return Err(DnsError::UpstreamError(format!("Invalid DNS response: {e}")).into());
     }
 
@@ -1179,7 +1179,7 @@ async fn retry_with_tcp(
     // Verify the transaction ID in the response
     let response_tid = dns_parser::tid(&response_buf);
     if response_tid != expected_tid {
-        error!("TCP response transaction ID mismatch: expected {expected_tid}, got {response_tid}");
+        debug!("TCP response transaction ID mismatch: expected {expected_tid}, got {response_tid}");
         return Err(
             DnsError::UpstreamError("Transaction ID mismatch in TCP response".to_string()).into(),
         );
@@ -1187,7 +1187,7 @@ async fn retry_with_tcp(
 
     // Validate that the response is a valid DNS response
     if let Err(e) = dns_parser::validate_dns_response(&response_buf) {
-        error!("Invalid DNS TCP response: {e}");
+        debug!("Invalid DNS TCP response: {e}");
         return Err(DnsError::UpstreamError(format!("Invalid DNS TCP response: {e}")).into());
     }
 

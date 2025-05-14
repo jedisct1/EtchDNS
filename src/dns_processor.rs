@@ -1,4 +1,4 @@
-use log::{debug, error};
+use log::debug;
 use std::sync::Arc;
 
 use crate::dns_key::DNSKey;
@@ -33,7 +33,7 @@ pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DN
     // Validate that this is a valid DNS packet
     if let Err(e) = dns_parser::validate_dns_packet(packet) {
         // If validation fails, log the error and return without responding
-        error!("Invalid DNS packet from {client_addr}: {e}");
+        debug!("Invalid DNS packet from {client_addr}: {e}");
         debug!("Dropping invalid DNS packet without response");
         return Err(e);
     }
@@ -42,7 +42,7 @@ pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DN
     match DNSKey::from_packet(packet) {
         Ok(key) => Ok(key),
         Err(e) => {
-            error!("Failed to create DNSKey from packet from {client_addr}: {e}");
+            debug!("Failed to create DNSKey from packet from {client_addr}: {e}");
             debug!("Error details: {e:?}");
             Err(e)
         }
@@ -324,7 +324,7 @@ pub trait DnsQueryProcessor {
                         // Check if the response contains an error
                         if let Some(error_msg) = response.error {
                             // Log the error
-                            log::error!("Error in DNS response: {error_msg}");
+                            log::debug!("Error in DNS response: {error_msg}");
                             log::debug!("Not sending error response to client {client_addr}");
                             return None;
                         }
@@ -336,7 +336,7 @@ pub trait DnsQueryProcessor {
                         if let Err(e) =
                             crate::dns_parser::set_tid(&mut response_data, client_query_id)
                         {
-                            log::error!("Failed to set transaction ID in response: {e}");
+                            log::debug!("Failed to set transaction ID in response: {e}");
                             return None;
                         } else {
                             log::debug!(
@@ -348,14 +348,14 @@ pub trait DnsQueryProcessor {
                         Some((response_data, client_query_id))
                     }
                     Err(e) => {
-                        log::error!("Failed to receive response from query manager: {e}");
+                        log::debug!("Failed to receive response from query manager: {e}");
                         log::debug!("Error details: {e:?}");
                         None
                     }
                 }
             }
             Err(e) => {
-                log::error!("Failed to submit query to query manager: {e}");
+                log::debug!("Failed to submit query to query manager: {e}");
                 log::debug!("Error details: {e:?}");
                 None
             }
