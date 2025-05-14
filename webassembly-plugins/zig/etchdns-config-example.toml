@@ -1,0 +1,14 @@
+# Example EtchDNS configuration file showing how to use the hooks plugin
+
+# Basic configuration
+listen_addresses = ["127.0.0.1:53", "[::1]:53"]
+upstream_servers = ["1.1.1.1:53", "8.8.8.8:53"]
+cache_size = 10000
+server_timeout = 2
+
+# Hooks configuration
+[hooks]
+plugin_path = "/path/to/hooks-plugin.wasm"
+
+# Other configuration options
+log_level = "info"

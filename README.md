@@ -232,7 +232,7 @@ The current implementation supports the following hook points:
 
 #### Example Implementation:
 
-EtchDNS includes an example WebAssembly plugin in the [`hooks-plugin`](hooks-plugin/) directory. This demonstrates how to create a simple plugin that can influence DNS query processing.
+EtchDNS includes an example WebAssembly plugin in the [`webassembly-plugins`](webassembly-plugins/) directory. This demonstrates how to create a simple plugin that can influence DNS query processing.
 
 To use WebAssembly extensions, specify the path to your compiled WASM file:
 
