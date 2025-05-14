@@ -1,5 +1,5 @@
 use crate::dns_processor;
-use crate::query_manager_new::QueryManager;
+use crate::query_manager::QueryManager;
 use crate::resolver;
 use crate::stats::SharedStats;
 use base64::{Engine as _, engine::general_purpose};

@@ -27,7 +27,7 @@ mod metrics;
 mod nx_zones;
 mod probe;
 mod query_logger;
-mod query_manager_new;
+mod query_manager;
 mod rate_limiter;
 mod resolver;
 mod stats;
@@ -35,7 +35,7 @@ mod stats;
 // Use our error types
 use errors::{DnsError, EtchDnsError, EtchDnsResult};
 use probe::probe_server;
-use query_manager_new::QueryManager;
+use query_manager::QueryManager;
 use stats::SharedStats;
 
 /// Command line arguments

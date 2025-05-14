@@ -177,11 +177,9 @@ pub async fn process_client_query<T>(
     dns_packet_len_max: usize,
     stats: Arc<crate::stats::SharedStats>,
     load_balancing_strategy: crate::load_balancer::LoadBalancingStrategy,
-) -> crate::errors::EtchDnsResult<
-    tokio::sync::broadcast::Receiver<crate::query_manager_new::DnsResponse>,
->
+) -> crate::errors::EtchDnsResult<tokio::sync::broadcast::Receiver<crate::query_manager::DnsResponse>>
 where
-    T: AsRef<crate::query_manager_new::QueryManager>,
+    T: AsRef<crate::query_manager::QueryManager>,
 {
     // Validate the packet and create a DNSKey
     let dns_key = match validate_and_create_key(query_data, client_addr) {
