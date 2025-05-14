@@ -1,4 +1,4 @@
-![EtchDNS](https://raw.github.com/jedisct1/etchdns/master/etchdns.png)
+![EtchDNS](https://raw.github.com/jedisct1/etchdns/master/img/logo.png)
 
 # EtchDNS
 
