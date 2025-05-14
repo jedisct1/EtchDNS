@@ -1,6 +1,5 @@
-use crate::dns_processor;
+use crate::dns_processor::DnsQueryProcessor;
 use crate::query_manager::QueryManager;
-use crate::resolver;
 use crate::stats::SharedStats;
 use base64::{Engine as _, engine::general_purpose};
 use bytes::Bytes;
@@ -141,6 +140,11 @@ async fn handle_doh_request(
     }
 }
 
+/// Handler for DoH requests
+struct DoHHandler;
+
+impl DnsQueryProcessor for DoHHandler {}
+
 /// Process a DNS message received via DoH
 async fn process_dns_message(
     dns_message: Vec<u8>,
@@ -152,98 +156,68 @@ async fn process_dns_message(
     load_balancing_strategy: crate::load_balancer::LoadBalancingStrategy,
     client_addr: &SocketAddr,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    // Validate the packet and create a DNSKey
-    let dns_key = match dns_processor::validate_and_create_key(&dns_message, "DoH client") {
-        Ok(key) => key,
-        Err(_) => {
-            // Error already logged in validate_and_create_key
-            let mut response =
-                Response::new(Full::new(Bytes::from("Bad Request: Invalid DNS packet")));
-            *response.status_mut() = StatusCode::BAD_REQUEST;
-            return Ok(response);
-        }
-    };
+    // Create a DoH handler
+    let handler = DoHHandler;
 
-    // Create a resolver function for this query
-    let query_data = dns_message.clone();
-    let resolver = resolver::create_resolver(
-        upstream_servers,
-        server_timeout,
-        dns_packet_len_max,
-        Some(stats),
-        load_balancing_strategy,
-    );
+    // Process the DNS query using the DnsQueryProcessor trait
+    let client_addr_str = client_addr.to_string();
+    let result = handler
+        .process_dns_query(
+            &dns_message,
+            &client_addr_str,
+            "DoH",
+            &query_manager,
+            &upstream_servers,
+            server_timeout,
+            dns_packet_len_max,
+            Some(stats),
+            load_balancing_strategy,
+        )
+        .await;
 
-    // Submit the query to the query manager with client address
-    match query_manager
-        .submit_query_with_client(dns_key, query_data, resolver, &client_addr.to_string())
-        .await
-    {
-        Ok(mut receiver) => {
-            // Wait for the response
-            match receiver.recv().await {
-                Ok(response) => {
-                    // Check if the response contains an error
-                    if let Some(error_msg) = response.error {
-                        // Log the error
-                        error!("Error in DNS response: {error_msg}");
-                        let mut http_response =
-                            Response::new(Full::new(Bytes::from("Internal Server Error")));
-                        *http_response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                        return Ok(http_response);
-                    }
+    match result {
+        Some((response_data, _)) => {
+            // Create a response with the DNS message
+            let mut http_response = Response::new(Full::new(Bytes::from(response_data.clone())));
+            http_response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("application/dns-message"),
+            );
 
-                    // Create a response with the DNS message
-                    let mut http_response =
-                        Response::new(Full::new(Bytes::from(response.data.clone())));
-                    http_response.headers_mut().insert(
-                        header::CONTENT_TYPE,
-                        header::HeaderValue::from_static("application/dns-message"),
-                    );
+            // Add HTTP caching headers
+            // Extract the minimum TTL from the DNS response, with a 1 second minimum
+            let cache_ttl = match crate::dns_parser::extract_min_ttl(&response_data) {
+                Ok(Some(ttl)) => std::cmp::max(ttl, 1), // Minimum of 1 second
+                _ => 10,                                // Default to 10 seconds if no TTL found
+            };
 
-                    // Add HTTP caching headers
-                    // Extract the minimum TTL from the DNS response, with a 1 second minimum
-                    let cache_ttl = match crate::dns_parser::extract_min_ttl(&response.data) {
-                        Ok(Some(ttl)) => std::cmp::max(ttl, 1), // Minimum of 1 second
-                        _ => 10, // Default to 10 seconds if no TTL found
-                    };
-
-                    // Add Cache-Control header
-                    let cache_control = format!("public, max-age={cache_ttl}");
-                    if let Ok(value) = header::HeaderValue::from_str(&cache_control) {
-                        http_response
-                            .headers_mut()
-                            .insert(header::CACHE_CONTROL, value);
-                    }
-
-                    // Add Expires header
-                    let now = std::time::UNIX_EPOCH
-                        + std::time::Duration::from_secs(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                        );
-                    let expiry_time = now + std::time::Duration::from_secs(cache_ttl as u64);
-                    let expiry_http_date = httpdate::fmt_http_date(expiry_time);
-                    if let Ok(value) = header::HeaderValue::from_str(&expiry_http_date) {
-                        http_response.headers_mut().insert(header::EXPIRES, value);
-                    }
-
-                    debug!("DoH response with cache TTL: {cache_ttl} seconds");
-                    Ok(http_response)
-                }
-                Err(e) => {
-                    error!("Failed to receive response from query manager: {e}");
-                    let mut http_response =
-                        Response::new(Full::new(Bytes::from("Internal Server Error")));
-                    *http_response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                    Ok(http_response)
-                }
+            // Add Cache-Control header
+            let cache_control = format!("public, max-age={cache_ttl}");
+            if let Ok(value) = header::HeaderValue::from_str(&cache_control) {
+                http_response
+                    .headers_mut()
+                    .insert(header::CACHE_CONTROL, value);
             }
+
+            // Add Expires header
+            let now = std::time::UNIX_EPOCH
+                + std::time::Duration::from_secs(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                );
+            let expiry_time = now + std::time::Duration::from_secs(cache_ttl as u64);
+            let expiry_http_date = httpdate::fmt_http_date(expiry_time);
+            if let Ok(value) = header::HeaderValue::from_str(&expiry_http_date) {
+                http_response.headers_mut().insert(header::EXPIRES, value);
+            }
+
+            debug!("DoH response with cache TTL: {cache_ttl} seconds");
+            Ok(http_response)
         }
-        Err(e) => {
-            error!("Failed to submit query to query manager: {e}");
+        None => {
+            // Error already logged in process_dns_query
             let mut http_response = Response::new(Full::new(Bytes::from("Internal Server Error")));
             *http_response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             Ok(http_response)

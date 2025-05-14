@@ -33,6 +33,7 @@ mod resolver;
 mod stats;
 
 // Use our error types
+use dns_processor::DnsQueryProcessor;
 use errors::{DnsError, EtchDnsError, EtchDnsResult};
 use probe::probe_server;
 use query_manager::QueryManager;
@@ -1536,106 +1537,7 @@ async fn process_tcp_connection(
     debug!("TCP connection handler for client {addr} exiting");
 }
 
-/// Common functionality for processing DNS queries
-trait DnsQueryProcessor {
-    /// Process a DNS query and get a response
-    async fn process_dns_query(
-        &self,
-        query_data: &[u8],
-        client_addr: &str,
-        protocol: &str,
-        query_manager: &Arc<QueryManager>,
-        upstream_servers: &[String],
-        server_timeout: u64,
-        dns_packet_len_max: usize,
-        stats: Option<Arc<SharedStats>>,
-        load_balancing_strategy: load_balancer::LoadBalancingStrategy,
-    ) -> Option<(Vec<u8>, u16)> {
-        // Log the received packet
-        dns_processor::log_received_packet(query_data.len(), client_addr, protocol);
-
-        // Validate the packet and create a DNSKey
-        let dns_key = match dns_processor::validate_and_create_key(query_data, client_addr) {
-            Ok(key) => key,
-            Err(_) => return None, // Error already logged in validate_and_create_key
-        };
-
-        // Get the client query ID once to avoid multiple calls
-        let client_query_id = dns_parser::tid(query_data);
-
-        // Extract client IP (without port) for EDNS-client-subnet
-        let client_ip = client_addr
-            .split(':')
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
-
-        // Get ECS configuration from query_manager
-        let enable_ecs = query_manager.get_enable_ecs();
-        let ecs_prefix_v4 = query_manager.get_ecs_prefix_v4();
-        let ecs_prefix_v6 = query_manager.get_ecs_prefix_v6();
-
-        // Create a resolver function for this query
-        let resolver = resolver::create_resolver_with_client_ip(
-            upstream_servers.to_vec(),
-            server_timeout,
-            dns_packet_len_max,
-            stats,
-            load_balancing_strategy,
-            client_ip,
-            enable_ecs,
-            ecs_prefix_v4,
-            ecs_prefix_v6,
-        );
-
-        // Submit the query to the query manager with client address
-        match query_manager
-            .submit_query_with_client(dns_key, query_data.to_vec(), resolver, client_addr)
-            .await
-        {
-            Ok(mut receiver) => {
-                // Wait for the response
-                match receiver.recv().await {
-                    Ok(response) => {
-                        // Check if the response contains an error
-                        if let Some(error_msg) = response.error {
-                            // Log the error
-                            error!("Error in DNS response: {error_msg}");
-                            debug!("Not sending error response to client {client_addr}");
-                            return None;
-                        }
-
-                        // Get the response data (no need to clone as we own it)
-                        let mut response_data = response.data;
-
-                        // Replace the query ID in the response with the client's query ID
-                        if let Err(e) = dns_parser::set_tid(&mut response_data, client_query_id) {
-                            error!("Failed to set transaction ID in response: {e}");
-                            return None;
-                        } else {
-                            debug!(
-                                "Replaced response transaction ID with client query ID: {client_query_id}"
-                            );
-                        }
-
-                        // Return the response data and client query ID
-                        Some((response_data, client_query_id))
-                    }
-                    Err(e) => {
-                        error!("Failed to receive response from query manager: {e}");
-                        debug!("Error details: {e:?}");
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Failed to submit query to query manager: {e}");
-                debug!("Error details: {e:?}");
-                None
-            }
-        }
-    }
-}
+// Use the DnsQueryProcessor trait from dns_processor.rs
 
 // Implement the DnsQueryProcessor trait for both client types
 impl DnsQueryProcessor for TCPClient {}
