@@ -147,6 +147,15 @@ cargo build --release
 
 The executable will be available at `target/release/etchdns`.
 
+#### Building with WebAssembly Hooks Support
+
+By default, EtchDNS is built without WebAssembly hooks support to keep the binary size smaller. If you want to enable the hooks functionality, build with the `hooks` feature flag:
+
+```sh
+cargo build --release --features hooks
+```
+Note that enabling the hooks feature includes a WebAssembly runtime which significantly increases the binary size. Only enable this feature if you plan to use WebAssembly extensions.
+
 ## Configuration
 
 EtchDNS uses a TOML configuration file to control all aspects of its behavior. A complete example with documentation can be found in the included [`config.toml`](config.toml) file.
@@ -233,6 +242,12 @@ One of EtchDNS's most powerful features is its ability to be extended through We
 - Go/TinyGo
 - And many others, thanks to Extism.
 
+> **Important**: To use WebAssembly extensions, you must compile EtchDNS with the `hooks` feature flag enabled:
+> ```sh
+> cargo build --release --features hooks
+> ```
+> This includes the Extism WebAssembly runtime, which significantly increases the binary size.
+
 #### Benefits of WebAssembly Extensions:
 
 - **Language Flexibility**: Write extensions in your preferred programming language
@@ -309,25 +324,32 @@ For more details on available targets, see the [fuzz/README.md](fuzz/README.md) 
 
 To build a WebAssembly extension for EtchDNS:
 
-1. Add the WebAssembly target to your Rust toolchain:
+1. Make sure you've compiled EtchDNS with hooks support:
+   ```sh
+   cargo build --release --features hooks
+   ```
+
+2. Add the WebAssembly target to your Rust toolchain:
    ```sh
    rustup target add wasm32-unknown-unknown
    ```
 
-2. Build the example plugin or your own extension:
+3. Build the example plugin or your own extension:
    ```sh
    cd hooks-plugin
    cargo build --target wasm32-unknown-unknown --release
    ```
 
-3. The compiled WebAssembly module will be available at `target/wasm32-unknown-unknown/release/hooks_plugin.wasm`
+4. The compiled WebAssembly module will be available at `target/wasm32-unknown-unknown/release/hooks_plugin.wasm`
 
-4. Copy the WebAssembly module to your EtchDNS directory and update the configuration:
+5. Copy the WebAssembly module to your EtchDNS directory and update the configuration:
    ```sh
    cp target/wasm32-unknown-unknown/release/hooks_plugin.wasm /path/to/etchdns/hooks.wasm
    ```
 
 For other languages, consult their respective WebAssembly compilation guides. The key requirement is that the resulting WASM module exports functions that match the hook interface defined by EtchDNS.
+
+> **Note**: If you try to use WebAssembly hooks with an EtchDNS binary that was compiled without the `hooks` feature, the hooks functionality will not be available and any hook-related configuration will be ignored.
 
 ## License
 

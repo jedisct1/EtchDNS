@@ -12,7 +12,7 @@ name = "etchdns"
 path = "src/main.rs"
 
 [features]
-default = ["hooks"]
+default = []
 hooks = ["extism"]
 
 [dependencies]
