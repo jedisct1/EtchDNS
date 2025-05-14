@@ -2,7 +2,7 @@
 
 # EtchDNS
 
-A high performance caching DNS proxy designed for security, reliability, and performance, with built-in protection mechanisms for both clients and upstream servers.
+A caching DNS proxy designed for security and reliability, with built-in protection mechanisms for both clients and upstream servers.
 
 ## Quickstart
 
@@ -42,7 +42,7 @@ Configure your local host to use EtchDNS (typically `127.0.0.1`) as a resolver. 
 ### Core Functionality
 
 - **Multiple Protocol Support**: Standard DNS over UDP/TCP (port 53) and DNS-over-HTTP (DoH)
-- **Efficient Caching**: High-performance built-in cache using the SIEVE algorithm
+- **Efficient Caching**: Built-in cache using the SIEVE algorithm
 - **Query Aggregation**: Coalesces identical in-flight queries to reduce upstream load
 - **Serve Stale**: Continues serving expired cache entries during upstream failures
 - **DNSSEC Compatible**: Fully supports DNSSEC for secure DNS resolution
