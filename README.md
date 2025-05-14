@@ -307,6 +307,36 @@ Currently, the following hook points are supported:
 
 See the `hooks-plugin` directory for details on implementing custom hook functions.
 
+## Testing
+
+### Unit Tests
+
+Run the standard unit tests with:
+
+```bash
+cargo test
+```
+
+### Fuzzing Tests
+
+EtchDNS includes fuzzing tests for the DNS parsers using `cargo-fuzz`. To run the fuzzing tests:
+
+1. Install cargo-fuzz:
+   ```bash
+   cargo install cargo-fuzz
+   ```
+
+2. Run a specific fuzz target:
+   ```bash
+   # Run the validate_dns_packet fuzzer
+   cargo fuzz run validate_dns_packet
+
+   # Run the qname fuzzer
+   cargo fuzz run qname
+   ```
+
+For more details on available fuzz targets and options, see the [fuzz/README.md](fuzz/README.md) file.
+
 ## License
 
 This project is licensed under the MIT License.

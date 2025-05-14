@@ -1,0 +1,56 @@
+[package]
+name = "etchdns-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+build = "build.rs"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.etchdns]
+path = ".."
+
+# Fuzz target for dns_parser::validate_dns_packet
+[[bin]]
+name = "validate_dns_packet"
+path = "fuzz_targets/validate_dns_packet.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz target for dns_parser::qname
+[[bin]]
+name = "qname"
+path = "fuzz_targets/qname.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz target for dns_parser::query_type_class
+[[bin]]
+name = "query_type_class"
+path = "fuzz_targets/query_type_class.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz target for dns_parser::is_dnssec_requested
+[[bin]]
+name = "is_dnssec_requested"
+path = "fuzz_targets/is_dnssec_requested.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz target for DNSKey::from_packet
+[[bin]]
+name = "dns_key_from_packet"
+path = "fuzz_targets/dns_key_from_packet.rs"
+test = false
+doc = false
+bench = false

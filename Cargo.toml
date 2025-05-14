@@ -3,6 +3,14 @@ name = "etchdns"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "etchdns"
+path = "src/lib.rs"
+
+[[bin]]
+name = "etchdns"
+path = "src/main.rs"
+
 [features]
 default = ["hooks"]
 hooks = ["extism"]
