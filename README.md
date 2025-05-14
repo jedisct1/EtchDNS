@@ -222,7 +222,6 @@ One of EtchDNS's most powerful features is its ability to be extended through We
 - **Language Flexibility**: Write extensions in your preferred programming language
 - **Sandboxed Execution**: Extensions run in a secure sandbox with minimal overhead
 - **Hot Reloading**: Update extensions without restarting EtchDNS
-- **Performance**: Near-native execution speed for complex filtering rules
 
 #### Current Capabilities:
 
