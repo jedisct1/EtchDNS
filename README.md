@@ -200,9 +200,9 @@ Available endpoints:
 - `POST /control/cache/clear`: Clear entire cache
 - `POST /control/cache/clear/zone`: Clear specific zone
 
-### WebAssembly Extensions (Beta)
+### WebAssembly Extensions (WIP)
 
-> **Note**: The WebAssembly extension system is currently in beta and under active development. While functional, expect API changes and additional features in future releases.
+> **Note**: The WebAssembly extension system is currently under active development. While functional, expect API changes and additional features in future releases.
 
 One of EtchDNS's most powerful features is its ability to be extended through WebAssembly modules. This allows you to implement custom DNS processing logic in any language that compiles to WebAssembly, including:
 
