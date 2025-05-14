@@ -2,7 +2,7 @@
 
 # EtchDNS
 
-A high performance DNS cache designed for security, reliability, and performance, with built-in protection mechanisms for both clients and upstream servers.
+A high performance caching DNS proxy designed for security, reliability, and performance, with built-in protection mechanisms for both clients and upstream servers.
 
 ## Quickstart
 
