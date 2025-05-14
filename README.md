@@ -76,7 +76,7 @@ Server health is continuously monitored with periodic probes to track performanc
 ### Monitoring and Management
 
 - **Prometheus Metrics**: HTTP endpoint providing detailed operational metrics
-- **Remote Control API**: HTTP API for remote management (e.g., cache purging)
+- **Remote Control API**: HTTP API for remote management (cache clearing, status monitoring)
 - **Configurable Logging**: Adjustable log levels from trace to error
 - **Query Logging**: Optional logging of DNS queries to a file
 
@@ -277,12 +277,16 @@ max_control_connections = 10                    # Maximum concurrent connections
 The following endpoints are available:
 
 - `GET /control/status`: Returns the current server status
+- `POST /control/cache/clear`: Clears the DNS cache
 
 Example usage with curl:
 
 ```bash
 # Check server status
 curl http://127.0.0.1:8080/control/status
+
+# Clear the DNS cache
+curl -X POST http://127.0.0.1:8080/control/cache/clear
 ```
 
 For security reasons, it's recommended to only bind the control API to localhost or a private network interface.

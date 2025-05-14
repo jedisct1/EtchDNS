@@ -1802,7 +1802,7 @@ async fn main() -> EtchDnsResult<()> {
 
     // Create a DNS cache with the configured capacity
     let cache_capacity = config.cache_size;
-    let dns_cache = cache::create_dns_cache(cache_capacity);
+    let dns_cache = Arc::new(cache::create_dns_cache(cache_capacity));
     debug!(
         "Created DNS cache with capacity of {} entries",
         cache_capacity
@@ -1894,7 +1894,7 @@ async fn main() -> EtchDnsResult<()> {
     );
 
     // Set the DNS cache in the query manager
-    query_manager.set_cache(dns_cache.clone());
+    query_manager.set_cache((*dns_cache).clone());
 
     // Set the hooks in the query manager
     query_manager.set_hooks(hooks.clone());
@@ -2144,6 +2144,7 @@ async fn main() -> EtchDnsResult<()> {
             // Clone the values we need for the control server
             let control_path = config.control_path.clone();
             let max_connections = config.max_control_connections;
+            let dns_cache = Some(dns_cache.clone());
 
             // Create a task for the control server
             let control_task = tokio::spawn(async move {
@@ -2152,8 +2153,13 @@ async fn main() -> EtchDnsResult<()> {
                     control_addr, control_path
                 );
 
-                if let Err(e) =
-                    control::start_control_server(control_addr, control_path, max_connections).await
+                if let Err(e) = control::start_control_server(
+                    control_addr,
+                    control_path,
+                    max_connections,
+                    dns_cache,
+                )
+                .await
                 {
                     error!("Control server error: {}", e);
                 }

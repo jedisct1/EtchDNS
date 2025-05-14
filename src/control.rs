@@ -10,6 +10,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
+use crate::cache::SyncDnsCache;
+
 /// Response structure for API calls
 #[derive(Serialize, Deserialize)]
 struct ApiResponse {
@@ -21,6 +23,7 @@ struct ApiResponse {
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
     control_path: String,
+    dns_cache: Option<Arc<SyncDnsCache>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
     let method = req.method();
@@ -59,6 +62,51 @@ async fn handle_request(
             Ok(response)
         }
 
+        // POST /cache/clear - Clear the DNS cache
+        (&Method::POST, "cache/clear") => {
+            if let Some(cache) = dns_cache {
+                // Clear the cache
+                cache.clear();
+
+                let cache_size = cache.len();
+                info!("DNS cache cleared, current size: {}", cache_size);
+
+                let response = ApiResponse {
+                    success: true,
+                    message: format!("Cache cleared successfully. Current size: {}", cache_size),
+                };
+                let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                    error!("Failed to serialize API response: {}", e);
+                    r#"{"success":false,"message":"Internal server error"}"#.to_string()
+                });
+
+                let mut response = Response::new(Full::new(Bytes::from(json)));
+                response.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    hyper::header::HeaderValue::from_static("application/json"),
+                );
+                Ok(response)
+            } else {
+                // DNS cache not available
+                let response = ApiResponse {
+                    success: false,
+                    message: "DNS cache not available".to_string(),
+                };
+                let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                    error!("Failed to serialize API response: {}", e);
+                    r#"{"success":false,"message":"Internal server error"}"#.to_string()
+                });
+
+                let mut response = Response::new(Full::new(Bytes::from(json)));
+                response.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    hyper::header::HeaderValue::from_static("application/json"),
+                );
+                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                Ok(response)
+            }
+        }
+
         // Any other endpoint
         _ => {
             let response = ApiResponse {
@@ -83,6 +131,7 @@ pub async fn start_control_server(
     addr: SocketAddr,
     control_path: String,
     max_connections: usize,
+    dns_cache: Option<Arc<SyncDnsCache>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a TCP listener
     let listener = TcpListener::bind(addr).await?;
@@ -90,6 +139,15 @@ pub async fn start_control_server(
         "Control server listening on {}, base path: {}",
         addr, control_path
     );
+
+    if dns_cache.is_some() {
+        info!(
+            "DNS cache control API enabled at {}/cache/clear",
+            control_path
+        );
+    } else {
+        warn!("DNS cache not available for control API");
+    }
 
     // Create a semaphore to limit concurrent connections
     let semaphore = Arc::new(Semaphore::new(max_connections));
@@ -103,6 +161,7 @@ pub async fn start_control_server(
         // Clone the resources for this connection
         let control_path = control_path.clone();
         let semaphore = semaphore.clone();
+        let dns_cache = dns_cache.clone();
 
         // Spawn a task to handle the connection
         tokio::spawn(async move {
@@ -124,7 +183,8 @@ pub async fn start_control_server(
             // Handle the connection
             let service = hyper::service::service_fn(move |req| {
                 let control_path = control_path.clone();
-                async move { handle_request(req, control_path).await }
+                let dns_cache = dns_cache.clone();
+                async move { handle_request(req, control_path, dns_cache).await }
             });
 
             // Process the connection
