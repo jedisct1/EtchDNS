@@ -72,6 +72,9 @@ pub struct QueryManager {
     /// TTL in seconds to use for negative DNS responses when no TTL is available
     negative_cache_ttl: u32,
 
+    /// Minimum TTL in seconds for cached DNS responses
+    min_cache_ttl: u32,
+
     /// Hooks for customizing DNS query processing
     hooks: Option<Arc<crate::hooks::SharedHooks>>,
 
@@ -117,6 +120,7 @@ impl QueryManager {
         serve_stale_grace_time: u64,
         serve_stale_ttl: u32,
         negative_cache_ttl: u32,
+        min_cache_ttl: u32,
         enable_ecs: bool,
         ecs_prefix_v4: u8,
         ecs_prefix_v6: u8,
@@ -138,6 +142,7 @@ impl QueryManager {
             serve_stale_grace_time,
             serve_stale_ttl,
             negative_cache_ttl,
+            min_cache_ttl,
             hooks: None,        // Initialize hooks as None, will be set later if needed
             query_logger: None, // Initialize query_logger as None, will be set later if needed
             enable_ecs,
@@ -959,10 +964,17 @@ impl QueryManager {
         response_data: &[u8],
     ) {
         // Extract the minimum TTL from the response
-        let ttl = match crate::dns_parser::extract_min_ttl(response_data) {
+        let extracted_ttl = match crate::dns_parser::extract_min_ttl(response_data) {
             Ok(Some(ttl)) => ttl,
             _ => self.negative_cache_ttl, // Use configured TTL for negative responses
         };
+
+        // Apply the minimum cache TTL if needed
+        // This applies in both authoritative and non-authoritative modes
+        // The difference is that in authoritative mode, we return the original TTL to clients
+        // while in non-authoritative mode, we adjust the TTL based on remaining time
+        let ttl = std::cmp::max(extracted_ttl, self.min_cache_ttl);
+
         // Create a cached response with the TTL
         // ttl is already in seconds, so we convert it to Duration
         let ttl_duration = std::time::Duration::from_secs(ttl as u64);
@@ -971,7 +983,14 @@ impl QueryManager {
 
         // Store the response in the cache
         cache.insert(key.clone(), cached_response);
-        log::debug!("Stored DNS response in cache with TTL: {ttl} seconds");
+
+        if ttl > extracted_ttl {
+            log::debug!(
+                "Stored DNS response in cache with minimum TTL: {ttl} seconds (original TTL was {extracted_ttl} seconds)"
+            );
+        } else {
+            log::debug!("Stored DNS response in cache with TTL: {ttl} seconds");
+        }
     }
 
     /// Helper function to remove a query from the in-flight map and slab

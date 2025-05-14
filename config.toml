@@ -90,6 +90,12 @@ serve_stale_ttl = 60
 # 60 seconds is a reasonable TTL for negative responses
 negative_cache_ttl = 60
 
+# Minimum TTL in seconds for cached DNS responses (default: 1)
+# This is the minimum time a valid response will be stored in the cache
+# Applied in both authoritative and non-authoritative modes
+# In authoritative mode, original TTLs are still returned to clients
+min_cache_ttl = 1
+
 #------------------------------------------------------------------------------
 # Domain Filtering
 #------------------------------------------------------------------------------

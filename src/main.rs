@@ -203,6 +203,11 @@ struct Config {
     #[serde(default = "default_negative_cache_ttl")]
     negative_cache_ttl: u32,
 
+    /// Minimum TTL in seconds for cached DNS responses
+    /// This is the minimum time a valid response will be stored in the cache (default: 1)
+    #[serde(default = "default_min_cache_ttl")]
+    min_cache_ttl: u32,
+
     /// Path to a WebAssembly file containing hook implementations
     /// If set, the hooks will be loaded from this file
     #[serde(default)]
@@ -402,6 +407,10 @@ fn default_log_level() -> String {
 
 fn default_negative_cache_ttl() -> u32 {
     1 // Default TTL for negative responses is 1 second
+}
+
+fn default_min_cache_ttl() -> u32 {
+    1 // Default minimum TTL for cached responses is 1 second
 }
 
 fn default_query_log_include_timestamp() -> bool {
@@ -1945,6 +1954,7 @@ async fn main() -> EtchDnsResult<()> {
         config.serve_stale_grace_time,
         config.serve_stale_ttl,
         config.negative_cache_ttl,
+        config.min_cache_ttl,
         config.enable_ecs,
         config.ecs_prefix_v4,
         config.ecs_prefix_v6,
