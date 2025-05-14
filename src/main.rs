@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use slabigator::Slab;
 use std::fs;
 use std::net::SocketAddr;
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +39,9 @@ use errors::{DnsError, EtchDnsError, EtchDnsResult};
 use probe::probe_server;
 use query_manager::QueryManager;
 use stats::SharedStats;
+
+#[macro_use]
+extern crate bpf;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -746,6 +750,26 @@ impl ClientQuery {
                 "Failed to bind socket for upstream connection: {e}"
             ))
         })?;
+        let upstream_socket_std = upstream_socket.into_std().map_err(|e| {
+            DnsError::UpstreamError(format!(
+                "Failed to convert upstream socket to standard: {e}"
+            ))
+        })?;
+        let upstream_socket_fd = upstream_socket_std.as_raw_fd();
+        let filter = bpfprog!(8,72 0 0 4,53 0 5 17,72 0 0 12,21 0 3 1,72 0 0 18,37 1 0 1,6 0 0 262144,6 0 0 0);
+        bpf::attach_filter(upstream_socket_fd, filter).ok();
+
+        upstream_socket_std.set_nonblocking(true).map_err(|e| {
+            DnsError::UpstreamError(format!(
+                "Failed to set upstream socket to non-blocking: {e}"
+            ))
+        })?;
+        let upstream_socket = UdpSocket::from_std(upstream_socket_std).map_err(|e| {
+            DnsError::UpstreamError(format!(
+                "Failed to convert standard socket back to UDP: {e}"
+            ))
+        })?;
+        upstream_socket.set_tos(0x10).ok();
 
         // If we get here, the packet is valid
         // Set EDNS0 with the configured maximum payload size
@@ -807,9 +831,7 @@ impl ClientQuery {
             );
         }
 
-        debug!(
-            "Replaced query transaction ID {original_tid} with random ID {random_tid}"
-        );
+        debug!("Replaced query transaction ID {original_tid} with random ID {random_tid}");
 
         // Set the initial timeout to half of the server_timeout
         let initial_timeout = std::cmp::max(1, self.server_timeout / 2);
@@ -822,9 +844,7 @@ impl ClientQuery {
         let start_time = std::time::Instant::now();
 
         // First attempt
-        debug!(
-            "Sending query to upstream server (first attempt): {upstream_addr}"
-        );
+        debug!("Sending query to upstream server (first attempt): {upstream_addr}");
         upstream_socket
             .send_to(&query_data, &upstream_addr)
             .await
@@ -862,9 +882,7 @@ impl ClientQuery {
             }
             Ok(Err(e)) => {
                 // Socket error
-                error!(
-                    "Failed to receive response from upstream server {upstream_addr}: {e}"
-                );
+                error!("Failed to receive response from upstream server {upstream_addr}: {e}");
 
                 // Record the failure in stats if available
                 if let Some(stats) = &self.stats {
@@ -900,9 +918,7 @@ impl ClientQuery {
                 }
 
                 // Second attempt
-                debug!(
-                    "Sending query to upstream server (retry attempt): {upstream_addr}"
-                );
+                debug!("Sending query to upstream server (retry attempt): {upstream_addr}");
                 upstream_socket
                     .send_to(&query_data, &upstream_addr)
                     .await
@@ -997,9 +1013,7 @@ async fn process_response(
     // Verify the transaction ID in the response
     let response_tid = dns_parser::tid(response_data);
     if response_tid != expected_tid {
-        error!(
-            "Transaction ID mismatch: expected {expected_tid}, got {response_tid}"
-        );
+        error!("Transaction ID mismatch: expected {expected_tid}, got {response_tid}");
         return Err(
             DnsError::UpstreamError("Transaction ID mismatch in response".to_string()).into(),
         );
@@ -1056,9 +1070,7 @@ async fn retry_with_tcp(
     debug!("Created TCP query from truncated UDP response");
 
     // Create a TCP connection to the upstream server
-    debug!(
-        "Connecting to upstream DNS server via TCP: {upstream_addr}"
-    );
+    debug!("Connecting to upstream DNS server via TCP: {upstream_addr}");
     let mut tcp_stream = match tokio::net::TcpStream::connect(upstream_addr).await {
         Ok(stream) => stream,
         Err(e) => {
@@ -1137,9 +1149,7 @@ async fn retry_with_tcp(
                 }
 
                 total_bytes_read += bytes_read;
-                debug!(
-                    "Read {bytes_read} bytes, total so far: {total_bytes_read}/{response_len}"
-                );
+                debug!("Read {bytes_read} bytes, total so far: {total_bytes_read}/{response_len}");
             }
             Err(e) => {
                 return Err(DnsError::UpstreamError(format!(
@@ -1153,9 +1163,7 @@ async fn retry_with_tcp(
     // Verify the transaction ID in the response
     let response_tid = dns_parser::tid(&response_buf);
     if response_tid != expected_tid {
-        error!(
-            "TCP response transaction ID mismatch: expected {expected_tid}, got {response_tid}"
-        );
+        error!("TCP response transaction ID mismatch: expected {expected_tid}, got {response_tid}");
         return Err(
             DnsError::UpstreamError("Transaction ID mismatch in TCP response".to_string()).into(),
         );
@@ -1167,9 +1175,7 @@ async fn retry_with_tcp(
         return Err(DnsError::UpstreamError(format!("Invalid DNS TCP response: {e}")).into());
     }
 
-    debug!(
-        "Successfully received DNS response via TCP, size: {response_len}"
-    );
+    debug!("Successfully received DNS response via TCP, size: {response_len}");
     Ok(response_buf)
 }
 
@@ -1481,9 +1487,7 @@ async fn process_tcp_connection(
                                         }
                                     }
                                     Err(e) => {
-                                        error!(
-                                            "Failed to read query from TCP client {addr}: {e}"
-                                        );
+                                        error!("Failed to read query from TCP client {addr}: {e}");
                                         break;
                                     }
                                 }
@@ -1508,9 +1512,7 @@ async fn process_tcp_connection(
                 }
             }
             Err(_) => {
-                info!(
-                    "TCP connection from {addr} timed out after {server_timeout} seconds"
-                );
+                info!("TCP connection from {addr} timed out after {server_timeout} seconds");
                 break;
             }
         }
@@ -1919,9 +1921,7 @@ async fn main() -> EtchDnsResult<()> {
     // Create a DNS cache with the configured capacity
     let cache_capacity = config.cache_size;
     let dns_cache = Arc::new(cache::create_dns_cache(cache_capacity));
-    debug!(
-        "Created DNS cache with capacity of {cache_capacity} entries"
-    );
+    debug!("Created DNS cache with capacity of {cache_capacity} entries");
 
     // Create rate limiters for UDP and TCP if enabled
     let udp_rate_limiter = if config.udp_rate_limit_window > 0 {
@@ -2026,14 +2026,10 @@ async fn main() -> EtchDnsResult<()> {
             Ok(zones) => {
                 let zone_count = zones.len();
                 query_manager.set_allowed_zones(zones);
-                info!(
-                    "Loaded {zone_count} allowed zones from {allowed_zones_file}"
-                );
+                info!("Loaded {zone_count} allowed zones from {allowed_zones_file}");
             }
             Err(e) => {
-                error!(
-                    "Failed to load allowed zones from {allowed_zones_file}: {e}"
-                );
+                error!("Failed to load allowed zones from {allowed_zones_file}: {e}");
                 return Err(EtchDnsError::ConfigParseError(format!(
                     "Failed to load allowed zones file: {e}"
                 )));
@@ -2047,14 +2043,10 @@ async fn main() -> EtchDnsResult<()> {
             Ok(zones) => {
                 let zone_count = zones.len();
                 query_manager.set_nx_zones(zones);
-                info!(
-                    "Loaded {zone_count} nonexistent zones from {nx_zones_file}"
-                );
+                info!("Loaded {zone_count} nonexistent zones from {nx_zones_file}");
             }
             Err(e) => {
-                error!(
-                    "Failed to load nonexistent zones from {nx_zones_file}: {e}"
-                );
+                error!("Failed to load nonexistent zones from {nx_zones_file}: {e}");
                 return Err(EtchDnsError::ConfigParseError(format!(
                     "Failed to load nonexistent zones file: {e}"
                 )));
@@ -2180,9 +2172,7 @@ async fn main() -> EtchDnsResult<()> {
 
         // Create a task for the metrics server
         let metrics_task = tokio::spawn(async move {
-            info!(
-                "Starting metrics server on {metrics_addr}, path: {metrics_path}"
-            );
+            info!("Starting metrics server on {metrics_addr}, path: {metrics_path}");
 
             if let Err(e) = metrics::start_metrics_server(
                 metrics_addr,
@@ -2258,9 +2248,7 @@ async fn main() -> EtchDnsResult<()> {
 
             // Create a task for the control server
             let control_task = tokio::spawn(async move {
-                info!(
-                    "Starting control server on {control_addr}, base path: {control_path}"
-                );
+                info!("Starting control server on {control_addr}, base path: {control_path}");
 
                 if let Err(e) = control::start_control_server(
                     control_addr,
@@ -2305,9 +2293,7 @@ async fn main() -> EtchDnsResult<()> {
                 // Wait for a packet
                 match socket.recv_from(&mut buf).await {
                     Ok((len, addr)) => {
-                        debug!(
-                            "Received packet of size {len} bytes from UDP client {addr}"
-                        );
+                        debug!("Received packet of size {len} bytes from UDP client {addr}");
 
                         // Check rate limit for UDP client if enabled
                         if let Some(rate_limiter) = &udp_rate_limiter {
@@ -2316,9 +2302,7 @@ async fn main() -> EtchDnsResult<()> {
 
                             // Check if the client is allowed to make a query
                             if !rate_limiter.is_allowed(client_ip).await {
-                                warn!(
-                                    "Rate limit exceeded for UDP client {addr}, dropping query"
-                                );
+                                warn!("Rate limit exceeded for UDP client {addr}, dropping query");
                                 continue;
                             }
                         }

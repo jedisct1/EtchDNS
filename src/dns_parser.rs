@@ -637,9 +637,7 @@ where
                 // These record types contain domain names in their RDATA
                 // Ccheck that the RDATA size is reasonable
                 if rdlen > DNS_MAX_HOSTNAME_SIZE {
-                    debug!(
-                        "Large RDATA for domain name record: {rdlen} bytes (type: {rr_type})"
-                    );
+                    debug!("Large RDATA for domain name record: {rdlen} bytes (type: {rr_type})");
                 }
             }
             _ => {}
@@ -689,9 +687,7 @@ where
                 // These record types contain domain names in their RDATA
                 // Check that the RDATA size is reasonable
                 if rdlen > DNS_MAX_HOSTNAME_SIZE {
-                    debug!(
-                        "Large RDATA for domain name record: {rdlen} bytes (type: {rr_type})"
-                    );
+                    debug!("Large RDATA for domain name record: {rdlen} bytes (type: {rr_type})");
                 }
             }
             _ => {}
@@ -782,9 +778,7 @@ pub fn add_edns_client_subnet(
     let ip_addr = match client_ip.parse::<std::net::IpAddr>() {
         Ok(addr) => addr,
         Err(_) => {
-            debug!(
-                "Invalid client IP address for EDNS-client-subnet: {client_ip}"
-            );
+            debug!("Invalid client IP address for EDNS-client-subnet: {client_ip}");
             return Ok(()); // Silently ignore invalid IP addresses
         }
     };

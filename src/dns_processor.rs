@@ -42,9 +42,7 @@ pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DN
     match DNSKey::from_packet(packet) {
         Ok(key) => Ok(key),
         Err(e) => {
-            error!(
-                "Failed to create DNSKey from packet from {client_addr}: {e}"
-            );
+            error!("Failed to create DNSKey from packet from {client_addr}: {e}");
             debug!("Error details: {e:?}");
             Err(e)
         }
@@ -59,9 +57,7 @@ pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DN
 /// * `client_addr` - A string representation of the client address
 /// * `protocol` - The protocol used (e.g., "UDP", "TCP", "DoH")
 pub fn log_received_packet(packet_size: usize, client_addr: &str, protocol: &str) {
-    log::debug!(
-        "Received {packet_size} bytes from {protocol} client {client_addr}"
-    );
+    log::debug!("Received {packet_size} bytes from {protocol} client {client_addr}");
 }
 
 /// Creates a DNS response with the specified response code

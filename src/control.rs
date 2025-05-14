@@ -197,9 +197,7 @@ async fn handle_request(
                 let new_size = cache.len();
                 let removed_entries = initial_size - new_size;
 
-                info!(
-                    "Cleared {removed_entries} entries for zone {zone} from DNS cache"
-                );
+                info!("Cleared {removed_entries} entries for zone {zone} from DNS cache");
 
                 let response = ApiResponse {
                     success: true,
@@ -267,9 +265,7 @@ pub async fn start_control_server(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a TCP listener
     let listener = TcpListener::bind(addr).await?;
-    info!(
-        "Control server listening on {addr}, base path: {control_path}"
-    );
+    info!("Control server listening on {addr}, base path: {control_path}");
 
     if dns_cache.is_some() {
         info!(
@@ -300,9 +296,7 @@ pub async fn start_control_server(
                 Ok(permit) => permit,
                 Err(_) => {
                     // Too many connections, reject this one
-                    warn!(
-                        "Too many control connections, rejecting connection from {client_addr}"
-                    );
+                    warn!("Too many control connections, rejecting connection from {client_addr}");
                     return;
                 }
             };
@@ -319,9 +313,7 @@ pub async fn start_control_server(
             // Process the connection
             if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                 // Log any errors
-                error!(
-                    "Error serving control connection from {client_addr}: {err}"
-                );
+                error!("Error serving control connection from {client_addr}: {err}");
             }
 
             debug!("Closed control connection from {client_addr}");

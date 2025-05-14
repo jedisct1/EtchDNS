@@ -143,9 +143,7 @@ impl Hooks {
                             }
                         }
                         Err(e) => {
-                            log::warn!(
-                                "Error calling WebAssembly hook_client_query_received: {e}"
-                            );
+                            log::warn!("Error calling WebAssembly hook_client_query_received: {e}");
                         }
                     }
                 } else {

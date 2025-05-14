@@ -292,9 +292,7 @@ pub async fn start_doh_server(
 
                 // Check if the client is allowed to make a connection
                 if !limiter.is_allowed(client_ip).await {
-                    warn!(
-                        "Rate limit exceeded for DoH client {client_addr}, dropping connection"
-                    );
+                    warn!("Rate limit exceeded for DoH client {client_addr}, dropping connection");
                     return;
                 }
             }
@@ -304,9 +302,7 @@ pub async fn start_doh_server(
                 Ok(permit) => permit,
                 Err(_) => {
                     // Too many connections, reject this one
-                    warn!(
-                        "Too many DoH connections, rejecting connection from {client_addr}"
-                    );
+                    warn!("Too many DoH connections, rejecting connection from {client_addr}");
                     return;
                 }
             };

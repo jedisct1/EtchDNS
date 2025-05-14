@@ -111,9 +111,7 @@ impl RateLimiter {
         if let Some(first_key) = state.clients.keys().find(|&&k| k != client_ip).cloned() {
             // Remove the first entry
             state.clients.remove(&first_key);
-            log::debug!(
-                "Removed client {first_key} from rate limiter due to capacity limit"
-            );
+            log::debug!("Removed client {first_key} from rate limiter due to capacity limit");
         }
     }
 

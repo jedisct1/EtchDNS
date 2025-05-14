@@ -161,9 +161,7 @@ pub async fn start_metrics_server(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a TCP listener
     let listener = TcpListener::bind(addr).await?;
-    info!(
-        "Metrics server listening on {addr}, path: {metrics_path}"
-    );
+    info!("Metrics server listening on {addr}, path: {metrics_path}");
 
     // Create a semaphore to limit concurrent connections
     let semaphore = Arc::new(Semaphore::new(max_connections));
