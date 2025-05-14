@@ -186,7 +186,7 @@ impl ServerProber {
         ];
 
         // Generate a random transaction ID
-        let tid: u16 = rand::thread_rng().gen_range(0..65535);
+        let tid: u16 = rand::rng().random_range(0..65535);
         query[0] = (tid >> 8) as u8;
         query[1] = tid as u8;
 
@@ -273,7 +273,7 @@ fn create_random_query() -> Vec<u8> {
     ];
 
     // Generate a random transaction ID
-    let tid: u16 = rand::thread_rng().gen_range(0..65535);
+    let tid: u16 = rand::rng().random_range(0..65535);
     query[0] = (tid >> 8) as u8;
     query[1] = tid as u8;
 
