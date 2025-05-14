@@ -1,77 +1,87 @@
+![EtchDNS](https://raw.github.com/jedisct1/etchdns/master/etchdns.png)
+
 # EtchDNS
 
-EtchDNS is a high-performance caching DNS proxy with a focus on security, reliability, and performance.
+A high performance DNS cache designed for security, reliability, and performance, with built-in protection mechanisms for both clients and upstream servers.
 
-## Overview
+## Quickstart
 
-EtchDNS acts as an intermediary between your clients and upstream DNS servers, adding key features like caching, load balancing, and security filtering. It's designed to be fast, reliable, and configurable, with support for both traditional DNS protocols and DNS-over-HTTP.
+1. Edit a copy of the [`config.toml`](config.toml) configuration file
+2. Run `etchdns -c /path/to/config.toml`
 
-### Common Use Cases
+EtchDNS can operate in two primary modes:
 
-- **Secondary DNS Server**: Quickly set up a secondary DNS server by setting `authoritative_dns = true` and pointing to your primary DNS servers as upstreams (no zone transfers required)
-- **DNS Accelerator**: Place EtchDNS in front of recursive DNS servers to add caching, load balancing, and protection
-- **Security Filter**: Use domain filtering to control which DNS queries are permitted
-- **DoH Gateway**: Provide DNS-over-HTTP for clients while using standard DNS for upstream servers
+### EtchDNS as a secondary DNS server
+
+For this mode, set the `authoritative_dns` property to `true`:
+
+```toml
+# Whether this server is authoritative for DNS responses
+# If true, TTLs in cached responses will not be adjusted
+authoritative_dns = true
+```
+
+EtchDNS will act as a "secondary DNS server" for the zones served by your primary DNS servers. The external IP address EtchDNS is listening on can be configured as a public authoritative server for your zones.
+
+This will reduce the load on your primary servers, mitigate common attacks, and ensure continuity of service even if the primary servers have temporary outages.
+
+### EtchDNS as a local DNS cache
+
+For this mode, keep the default `authoritative_dns` setting as `false`:
+
+```toml
+# Whether this server is authoritative for DNS responses
+# If false (default), TTLs in cached responses will be adjusted based on remaining time
+authoritative_dns = false
+```
+
+Configure your local host to use EtchDNS (typically `127.0.0.1`) as a resolver. EtchDNS will cache responses, balance the load across the configured resolvers, and improve your experience by making DNS more reliable.
 
 ## Features
 
-### Core Features
+### Core Functionality
 
-- **Efficient Forwarding**: Forward DNS queries to multiple upstream DNS servers with configurable timeout and retry logic
-- **Multiple Protocol Support**:
-  - Standard DNS over UDP (port 53)
-  - Standard DNS over TCP (port 53)
-  - DNS-over-HTTP (DoH)
-- **High Performance**:
-  - Query aggregation to reduce duplicate upstream requests
-  - Connection handling with protection against common DoS attacks
-  - High-performance built-in cache using SIEVE, with serve-stale to keep responding to clients even when upstream servers are overloaded or unreachable
+- **Multiple Protocol Support**: Standard DNS over UDP/TCP (port 53) and DNS-over-HTTP (DoH)
+- **Efficient Caching**: High-performance built-in cache using the SIEVE algorithm
+- **Query Aggregation**: Coalesces identical in-flight queries to reduce upstream load
+- **Serve Stale**: Continues serving expired cache entries during upstream failures
+- **DNSSEC Compatible**: Fully supports DNSSEC for secure DNS resolution
 
 ### Load Balancing
 
-- **Multiple Strategies**:
-  - `random`: Simple random selection of upstream servers
-  - `fastest`: Select the server with the fastest recent response times
-  - `p2` (Power of Two Choices): Randomly select two servers and use the faster one
-- **Server Health Monitoring**: Periodically probe upstream DNS servers to track performance
-- **Smart Selection**: Considers server performance when making routing decisions
+EtchDNS offers multiple strategies for distributing queries across upstream servers:
+
+- **Fastest**: Selects servers with the lowest response times (default)
+- **Power-of-Two-Choices (p2)**: Randomly selects two servers and uses the faster one
+- **Random**: Simple random selection of upstream servers
+
+Server health is continuously monitored with periodic probes to track performance and ensure optimal routing decisions.
 
 ### Security Features
 
 - **Domain Filtering**:
   - Allowed zones: Restrict queries to only domains in a specified list
-  - NX zones: Automatically return NXDOMAIN for domains in a blocklist
-- **Rate Limiting**:
-  - Configurable per protocol (UDP, TCP, DoH)
-  - Limit the number of clients tracked to prevent memory exhaustion
-- **Transaction ID Masking**: Helps protect against DNS poisoning attacks
+  - NX zones: Return NXDOMAIN for domains in a blocklist
+- **Rate Limiting**: Configurable per protocol (UDP, TCP, DoH) with protection against memory exhaustion
 - **Request Validation**: Thorough validation of DNS packets
-- **Compatible with DNSSEC**
+- **Transaction ID Masking**: Protection against DNS poisoning attacks
+
+### Reliability
+
+- **Automatic Failover**: Quickly detects upstream server outages and routes traffic accordingly
+- **Resilience Against Outages**: Serves cached responses when upstream servers are unavailable
+- **Latency Guarantees**: Ensures maximum response times even during upstream slowdowns
 
 ### Monitoring
 
-- **Prometheus-Compatible Metrics**: HTTP endpoint providing operational metrics
-- **Detailed Logging**: Configurable log levels for troubleshooting
-- **Performance Statistics**: Track upstream server response times and success rates
+- **Prometheus Metrics**: HTTP endpoint providing detailed operational metrics
+- **Configurable Logging**: Adjustable log levels from trace to error
+- **Query Logging**: Optional logging of DNS queries to a file
 
 ### Extensibility
 
-- **WebAssembly Hooks**: Extend EtchDNS with custom WebAssembly modules
-- **Modular Design**: Clean separation of components makes code changes easier
-
-## Installation
-
-### From Source
-
-1. Ensure you have Rust and Cargo installed (version 1.70.0 or newer recommended)
-2. Clone this repository
-3. Build the release version:
-
-```bash
-cargo build --release
-```
-
-The executable will be available at `target/release/etchdns`.
+- **WebAssembly Hooks**: Extend functionality with custom WebAssembly modules
+- **Modular Design**: Clean separation of components for easier maintenance and extension
 
 ## Configuration
 
@@ -151,13 +161,19 @@ serve_stale_ttl = 30           # TTL to use for stale entries
 # Negative cache TTL
 negative_cache_ttl = 60        # seconds to cache NXDOMAIN results
 
+# Query logging (optional)
+query_log_file = "queries.log"
+query_log_include_timestamp = true
+query_log_include_client_addr = true
+query_log_include_query_type = true
+
 # WebAssembly hooks (optional)
 hooks_wasm_file = "hooks.wasm"
 ```
 
-### Domain Filtering
+## Domain Filtering
 
-#### Allowed Zones
+### Allowed Zones
 
 Create a text file with one domain per line. EtchDNS will only process queries for domains that match or are subdomains of these entries. Empty lines and lines starting with `#` are ignored.
 
@@ -172,7 +188,7 @@ github.com
 google.com
 ```
 
-#### NX Zones
+### NX Zones
 
 Create a text file with domains that should return NXDOMAIN responses. Empty lines and lines starting with `#` are ignored.
 
@@ -186,9 +202,21 @@ analytics.example.com
 malware.example.net
 ```
 
-## Usage
+## Installation
 
-### Running EtchDNS
+### From Source
+
+1. Ensure you have Rust and Cargo installed (version 1.70.0 or newer recommended)
+2. Clone this repository
+3. Build the release version:
+
+```bash
+cargo build --release
+```
+
+The executable will be available at `target/release/etchdns`.
+
+## Usage
 
 ```bash
 ./etchdns -c /path/to/config.toml
@@ -209,8 +237,7 @@ For optimal performance, consider these configuration guidelines:
 4. **Load Balancing**: Use `fastest` strategy for highest performance, or `p2` for a good balance
 5. **Rate Limiting**: Set appropriate limits to prevent DoS while allowing legitimate traffic
 6. **Serve Stale**: Enable `serve_stale_grace_time` to improve reliability when upstream servers fail
-7. **Authoritative Mode**: Set `authoritative_dns = true` when serving as a secondary DNS server (works with any DNS provider, even those that don't support zone transfers)
-8. **Metrics**: Enable metrics to monitor performance and identify bottlenecks
+7. **Authoritative Mode**: Set `authoritative_dns = true` when serving as a secondary DNS server
 
 ## Security Considerations
 
@@ -221,9 +248,13 @@ For optimal performance, consider these configuration guidelines:
 
 ## Advanced Usage
 
-### WebAssembly Hooks (work in progress)
+### WebAssembly Hooks
 
 EtchDNS supports extending functionality through WebAssembly modules. Create a compatible WASM file and specify it in `hooks_wasm_file` to enable custom processing at various points in the DNS resolution pipeline.
+
+Currently, the following hook points are supported:
+
+- `hook_client_query_received`: Called when a client query is received, before checking the cache
 
 See the `hooks-plugin` directory for details on implementing custom hook functions.
 
