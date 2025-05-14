@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
 
     // Create the plugin executable
     var plugin = b.addExecutable(.{
-        .name = "hooks-plugin",
+        .name = "etchdns-plugin",
         .root_source_file = .{ .path = "src/main.zig" },
         .target = target,
         .optimize = optimize,
@@ -25,6 +25,6 @@ pub fn build(b: *std.Build) void {
     plugin.root_module.addImport("extism-pdk", pdk_module);
 
     b.installArtifact(plugin);
-    const plugin_step = b.step("hooks-plugin", "Build hooks-plugin");
+    const plugin_step = b.step("etchdns-plugin", "Build etchdns-plugin");
     plugin_step.dependOn(b.getInstallStep());
 }

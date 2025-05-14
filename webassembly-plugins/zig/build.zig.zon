@@ -1,10 +1,16 @@
 .{
-    .name = "hooks-plugin",
+    .name = .etchdns_plugin,
     .version = "0.1.0",
+    .fingerprint = 0xf5103032a7aec2b2,
     .dependencies = .{
         .@"extism-pdk" = .{
             .url = "https://github.com/extism/zig-pdk/archive/refs/tags/v1.3.0.tar.gz",
-            .hash = "1220a645e8b0c82b0f29aedc04c82b5f3c57d9e9d5d8f4ae2c8c4d2b7d1d1e1f", // Replace with actual hash
+            .hash = "1220a645e8b0c82b0f29aedc04c82b5f3c57d9e9d5d8f4ae2c8c4d2b7d1d1e1f",
         },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
     },
 }
