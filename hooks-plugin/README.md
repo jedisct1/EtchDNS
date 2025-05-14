@@ -19,7 +19,8 @@ This function is called when a client query is received by EtchDNS, just before 
 {
   "query_name": "example.com",
   "qtype": 1,
-  "qclass": 1
+  "qclass": 1,
+  "client_ip": "192.168.1.1"
 }
 ```
 
@@ -30,8 +31,8 @@ This function is called when a client query is received by EtchDNS, just before 
 ## Implementation Details
 
 The plugin uses a simple rule for demonstration purposes:
-- If the query is for "example.com", it returns `"-1"` to refuse the query
-- For all other domains, it returns `"0"` to continue normal processing
+- If the query is for "example.com" OR the client IP is "192.168.1.100", it returns `"-1"` to refuse the query
+- For all other domains and client IPs, it returns `"0"` to continue normal processing
 
 ## Building the Plugin
 

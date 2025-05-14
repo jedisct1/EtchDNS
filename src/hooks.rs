@@ -16,6 +16,7 @@ struct QueryInput<'a> {
     query_name: &'a str,
     qtype: u16,
     qclass: u16,
+    client_ip: &'a str,
 }
 
 /// Hooks structure for customizing DNS query processing
@@ -81,6 +82,7 @@ impl Hooks {
     /// * `query_name` - The domain name being queried
     /// * `qtype` - The query type (e.g., A, AAAA, MX)
     /// * `qclass` - The query class (usually IN for Internet)
+    /// * `client_ip` - The client IP address (without port)
     /// * `query_data` - The raw query data
     ///
     /// # Returns
@@ -97,6 +99,8 @@ impl Hooks {
         #[cfg(not(feature = "hooks"))] _qtype: u16,
         #[cfg(feature = "hooks")] qclass: u16,
         #[cfg(not(feature = "hooks"))] _qclass: u16,
+        #[cfg(feature = "hooks")] client_ip: &str,
+        #[cfg(not(feature = "hooks"))] _client_ip: &str,
         _query_data: &[u8],
     ) -> i32 {
         // If hooks are enabled and we have a WebAssembly plugin, call it
@@ -108,6 +112,7 @@ impl Hooks {
                     query_name,
                     qtype,
                     qclass,
+                    client_ip,
                 };
                 let input_json = serde_json::to_string(&input).unwrap_or_else(|e| {
                     log::warn!("Failed to serialize query input: {}", e);
@@ -186,6 +191,7 @@ impl SharedHooks {
     /// * `query_name` - The domain name being queried
     /// * `qtype` - The query type (e.g., A, AAAA, MX)
     /// * `qclass` - The query class (usually IN for Internet)
+    /// * `client_ip` - The client IP address (without port)
     /// * `query_data` - The raw query data
     ///
     /// # Returns
@@ -199,10 +205,11 @@ impl SharedHooks {
         query_name: &str,
         qtype: u16,
         qclass: u16,
+        client_ip: &str,
         query_data: &[u8],
     ) -> i32 {
         self.inner
-            .hook_client_query_received(query_name, qtype, qclass, query_data)
+            .hook_client_query_received(query_name, qtype, qclass, client_ip, query_data)
     }
 }
 

@@ -193,8 +193,12 @@ impl QueryManager {
             let _ = query_logger.log_query(&key, client_addr).await;
         }
 
-        // Call the regular submit_query implementation
-        self.submit_query_internal(key, query_data, resolver).await
+        // Extract the client IP (without port) from client_addr
+        let client_ip = client_addr.split(':').next().unwrap_or("unknown");
+
+        // Call the internal implementation with client IP
+        self.submit_query_internal_with_client(key, query_data, resolver, client_ip)
+            .await
     }
 
     /// Submit a query and get a receiver for the response
@@ -218,12 +222,13 @@ impl QueryManager {
             let _ = query_logger.log_query(&key, client_addr).await;
         }
 
-        // Call the internal implementation
-        self.submit_query_internal(key, query_data, resolver).await
+        // Call the internal implementation with a default client IP
+        self.submit_query_internal_with_client(key, query_data, resolver, "unknown")
+            .await
     }
 
-    /// Internal implementation of submit_query
-    async fn submit_query_internal(
+    /// Internal implementation of submit_query with client IP
+    async fn submit_query_internal_with_client(
         &self,
         key: DNSKey,
         query_data: Vec<u8>,
@@ -231,6 +236,7 @@ impl QueryManager {
         + Send
         + Sync
         + 'static,
+        client_ip: &str,
     ) -> EtchDnsResult<broadcast::Receiver<DnsResponse>> {
         // Check if the query is of type ANY (255)
         if key.qtype == crate::dns_parser::DNS_TYPE_ANY {
@@ -282,8 +288,13 @@ impl QueryManager {
 
         // Call the hook_client_query_received hook if hooks are configured
         if let Some(hooks) = &self.hooks {
-            let hook_result =
-                hooks.hook_client_query_received(&key.name, key.qtype, key.qclass, &query_data);
+            let hook_result = hooks.hook_client_query_received(
+                &key.name,
+                key.qtype,
+                key.qclass,
+                client_ip,
+                &query_data,
+            );
 
             // Handle different hook return codes
             match hook_result {
