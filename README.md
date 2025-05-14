@@ -25,7 +25,7 @@
 
 ## What is EtchDNS?
 
-EtchDNS is a high-performance caching DNS proxy designed for security and reliability. It acts as a protective layer between clients and upstream DNS servers, providing robust caching, intelligent load balancing, and comprehensive security features.
+EtchDNS is a caching DNS proxy designed for security and reliability. It acts as a protective layer between clients and upstream DNS servers, providing robust caching, intelligent load balancing, and comprehensive security features.
 
 **Perfect for:**
 - Organizations seeking to improve DNS performance and security
