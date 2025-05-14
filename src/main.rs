@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 // Include our modules
 mod allowed_zones;
 mod cache;
+mod control;
 mod dns_key;
 mod dns_key_test;
 mod dns_parser;
@@ -146,6 +147,18 @@ struct Config {
     #[serde(default = "default_max_doh_connections")]
     max_doh_connections: usize,
 
+    /// Addresses to listen on for the HTTP control server (array of "ip:port" strings)
+    #[serde(default = "default_control_listen_addresses")]
+    control_listen_addresses: Vec<String>,
+
+    /// Maximum number of concurrent connections to the HTTP control server
+    #[serde(default = "default_max_control_connections")]
+    max_control_connections: usize,
+
+    /// Base path for the control API endpoints
+    #[serde(default = "default_control_path")]
+    control_path: String,
+
     /// Interval between DNS server probes in seconds (0 to disable)
     #[serde(default = "default_probe_interval")]
     probe_interval: u64,
@@ -275,6 +288,18 @@ fn default_max_metrics_connections() -> usize {
 
 fn default_max_doh_connections() -> usize {
     10 // Default to 10 concurrent DoH connections
+}
+
+fn default_control_listen_addresses() -> Vec<String> {
+    Vec::new() // Empty by default, control server is disabled
+}
+
+fn default_max_control_connections() -> usize {
+    5 // Default to 5 concurrent control connections
+}
+
+fn default_control_path() -> String {
+    "/control".to_string() // Default control API base path
 }
 
 fn default_load_balancing_strategy() -> String {
@@ -437,6 +462,16 @@ impl Config {
             })?;
         }
 
+        // Validate each control server listen address
+        for addr_str in &self.control_listen_addresses {
+            addr_str.parse::<SocketAddr>().map_err(|e| {
+                EtchDnsError::Other(format!(
+                    "Invalid control server socket address {}: {}",
+                    addr_str, e
+                ))
+            })?;
+        }
+
         // Validate the load balancing strategy
         self.load_balancing_strategy
             .parse::<load_balancer::LoadBalancingStrategy>()
@@ -522,6 +557,23 @@ impl Config {
         for addr_str in &self.doh_listen_addresses {
             let addr = addr_str.parse::<SocketAddr>().map_err(|e| {
                 EtchDnsError::Other(format!("Invalid DoH socket address {}: {}", addr_str, e))
+            })?;
+            addrs.push(addr);
+        }
+
+        Ok(addrs)
+    }
+
+    /// Parse the control server listen addresses into SocketAddr objects
+    fn control_socket_addrs(&self) -> EtchDnsResult<Vec<SocketAddr>> {
+        let mut addrs = Vec::new();
+
+        for addr_str in &self.control_listen_addresses {
+            let addr = addr_str.parse::<SocketAddr>().map_err(|e| {
+                EtchDnsError::Other(format!(
+                    "Invalid control server socket address {}: {}",
+                    addr_str, e
+                ))
             })?;
             addrs.push(addr);
         }
@@ -1842,7 +1894,7 @@ async fn main() -> EtchDnsResult<()> {
     );
 
     // Set the DNS cache in the query manager
-    query_manager.set_cache(dns_cache);
+    query_manager.set_cache(dns_cache.clone());
 
     // Set the hooks in the query manager
     query_manager.set_hooks(hooks.clone());
@@ -2080,6 +2132,35 @@ async fn main() -> EtchDnsResult<()> {
 
             // Add the DoH task to the list of tasks
             tasks.push(doh_task);
+        }
+    }
+
+    // Start the control servers if configured
+    if !config.control_listen_addresses.is_empty() {
+        // Parse the control server addresses
+        let control_socket_addrs = config.control_socket_addrs()?;
+
+        for control_addr in control_socket_addrs {
+            // Clone the values we need for the control server
+            let control_path = config.control_path.clone();
+            let max_connections = config.max_control_connections;
+
+            // Create a task for the control server
+            let control_task = tokio::spawn(async move {
+                info!(
+                    "Starting control server on {}, base path: {}",
+                    control_addr, control_path
+                );
+
+                if let Err(e) =
+                    control::start_control_server(control_addr, control_path, max_connections).await
+                {
+                    error!("Control server error: {}", e);
+                }
+            });
+
+            // Add the control task to the list of tasks
+            tasks.push(control_task);
         }
     }
 

@@ -73,9 +73,10 @@ Server health is continuously monitored with periodic probes to track performanc
 - **Resilience Against Outages**: Serves cached responses when upstream servers are unavailable
 - **Latency Guarantees**: Ensures maximum response times even during upstream slowdowns
 
-### Monitoring
+### Monitoring and Management
 
 - **Prometheus Metrics**: HTTP endpoint providing detailed operational metrics
+- **Remote Control API**: HTTP API for remote management (e.g., cache purging)
 - **Configurable Logging**: Adjustable log levels from trace to error
 - **Query Logging**: Optional logging of DNS queries to a file
 
@@ -124,6 +125,11 @@ load_balancing_strategy = "fastest"
 metrics_address = "127.0.0.1:9100"
 metrics_path = "/metrics"
 max_metrics_connections = 5
+
+# Control API setup (optional) - provides a simple status endpoint
+control_listen_addresses = ["127.0.0.1:8080"]
+control_path = "/control"
+max_control_connections = 10
 
 # Rate limiting configuration (UDP)
 udp_rate_limit_window = 1      # seconds
@@ -256,6 +262,30 @@ For optimal performance, consider these configuration guidelines:
 - Consider running behind a reverse proxy for DoH with TLS termination
 
 ## Advanced Usage
+
+### Control API
+
+EtchDNS provides an HTTP API for remote management of the service. To enable it, configure the `control_listen_addresses` in your configuration file:
+
+```toml
+# Control API setup
+control_listen_addresses = ["127.0.0.1:8080"]  # Only listen on localhost for security
+control_path = "/control"                       # Base path for API endpoints
+max_control_connections = 10                    # Maximum concurrent connections
+```
+
+The following endpoints are available:
+
+- `GET /control/status`: Returns the current server status
+
+Example usage with curl:
+
+```bash
+# Check server status
+curl http://127.0.0.1:8080/control/status
+```
+
+For security reasons, it's recommended to only bind the control API to localhost or a private network interface.
 
 ### WebAssembly Hooks
 

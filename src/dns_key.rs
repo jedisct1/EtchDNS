@@ -62,7 +62,8 @@ impl DNSKey {
     /// Normalizes a domain name by converting it to lowercase and removing the trailing dot
     ///
     /// Also validates that the domain name is not too long.
-    fn normalize_name(name: &str) -> String {
+    /// This is a public method that can be called from outside the struct.
+    pub fn normalize_name(name: &str) -> String {
         // Check if the domain name is too long
         if name.len() > crate::dns_parser::DNS_MAX_HOSTNAME_SIZE {
             // Log a warning but proceed with truncation

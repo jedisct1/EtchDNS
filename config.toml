@@ -167,6 +167,21 @@ metrics_path = "/metrics"
 max_metrics_connections = 20
 
 #------------------------------------------------------------------------------
+# Control API Configuration
+#------------------------------------------------------------------------------
+
+# Addresses to listen on for the HTTP control server (array of "ip:port" strings)
+# If empty, the control server is disabled
+# Bind to localhost for security
+control_listen_addresses = ["127.0.0.1:8080"]
+
+# Base path for the control API endpoints (default: "/control")
+control_path = "/control"
+
+# Maximum number of concurrent connections to the HTTP control server (default: 5)
+max_control_connections = 10
+
+#------------------------------------------------------------------------------
 # Logging Configuration
 #------------------------------------------------------------------------------
 
