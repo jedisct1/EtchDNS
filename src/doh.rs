@@ -6,7 +6,6 @@ use base64::{Engine as _, engine::general_purpose};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use http_body_util::Full;
-use httpdate;
 use hyper::{Method, Request, Response, StatusCode, header, server::conn::http1};
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info, warn};

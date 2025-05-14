@@ -277,7 +277,8 @@ max_control_connections = 10                    # Maximum concurrent connections
 The following endpoints are available:
 
 - `GET /control/status`: Returns the current server status
-- `POST /control/cache/clear`: Clears the DNS cache
+- `POST /control/cache/clear`: Clears the entire DNS cache
+- `POST /control/cache/clear/zone`: Clears DNS cache entries for a specific zone and all its subdomains
 
 Example usage with curl:
 
@@ -285,8 +286,13 @@ Example usage with curl:
 # Check server status
 curl http://127.0.0.1:8080/control/status
 
-# Clear the DNS cache
+# Clear the entire DNS cache
 curl -X POST http://127.0.0.1:8080/control/cache/clear
+
+# Clear cache entries for example.com and all its subdomains
+curl -X POST http://127.0.0.1:8080/control/cache/clear/zone \
+  -H "Content-Type: application/json" \
+  -d '{"zone": "example.com"}'
 ```
 
 For security reasons, it's recommended to only bind the control API to localhost or a private network interface.
