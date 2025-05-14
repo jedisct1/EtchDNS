@@ -41,9 +41,11 @@ pub const EDNS_OPTION_CLIENT_SUBNET: u16 = 8; // Client Subnet (RFC 7871)
 
 // DNS header flags
 const DNS_FLAGS_QR: u16 = 1u16 << 15; // Query/Response flag
+const DNS_FLAGS_AA: u16 = 1u16 << 10; // Authoritative Answer flag
 const DNS_FLAGS_TC: u16 = 1u16 << 9; // Truncation flag
 #[allow(dead_code)]
 const DNS_FLAGS_RD: u16 = 1u16 << 8; // Recursion Desired
+const DNS_FLAGS_RA: u16 = 1u16 << 7; // Recursion Available flag
 const DNS_FLAGS_CD: u16 = 1u16 << 4; // Checking Disabled (DNSSEC)
 #[allow(dead_code)]
 const DNS_FLAGS_AD: u16 = 1u16 << 5; // Authentic Data (DNSSEC)
@@ -1051,6 +1053,36 @@ pub fn set_tc(packet: &mut [u8], is_truncated: bool) -> DnsResult<()> {
         flags_val |= DNS_FLAGS_TC; // Set TC bit
     } else {
         flags_val &= !DNS_FLAGS_TC; // Clear TC bit
+    }
+    set_flags(packet, flags_val)
+}
+
+/// Sets the AA (Authoritative Answer) bit in a DNS packet
+pub fn set_aa(packet: &mut [u8], is_authoritative: bool) -> DnsResult<()> {
+    if packet.len() < 4 {
+        return Err(DnsError::PacketTooShort { offset: 0 });
+    }
+
+    let mut flags_val = flags(packet);
+    if is_authoritative {
+        flags_val |= DNS_FLAGS_AA; // Set AA bit
+    } else {
+        flags_val &= !DNS_FLAGS_AA; // Clear AA bit
+    }
+    set_flags(packet, flags_val)
+}
+
+/// Sets the RA (Recursion Available) bit in a DNS packet
+pub fn set_ra(packet: &mut [u8], recursion_available: bool) -> DnsResult<()> {
+    if packet.len() < 4 {
+        return Err(DnsError::PacketTooShort { offset: 0 });
+    }
+
+    let mut flags_val = flags(packet);
+    if recursion_available {
+        flags_val |= DNS_FLAGS_RA; // Set RA bit
+    } else {
+        flags_val &= !DNS_FLAGS_RA; // Clear RA bit
     }
     set_flags(packet, flags_val)
 }

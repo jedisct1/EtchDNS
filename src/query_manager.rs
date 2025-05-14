@@ -260,9 +260,10 @@ impl QueryManager {
                 key.name
             );
 
-            let (_, receiver) = Self::create_and_send_response(
+            let (_, receiver) = Self::create_and_send_response_with_flags(
                 &query_data,
                 crate::dns_processor::DNS_RCODE_NOTIMP,
+                self.authoritative_dns,
                 Some(&log_msg),
             );
 
@@ -275,9 +276,10 @@ impl QueryManager {
                 log::debug!("Query for nonexistent domain: {}", key.name);
 
                 let log_msg = format!("Query for nonexistent domain: {}", key.name);
-                let (_, receiver) = Self::create_and_send_response(
+                let (_, receiver) = Self::create_and_send_response_with_flags(
                     &query_data,
                     crate::dns_processor::DNS_RCODE_NXDOMAIN,
+                    self.authoritative_dns,
                     Some(&log_msg),
                 );
 
@@ -291,9 +293,10 @@ impl QueryManager {
                 log::warn!("Query rejected: {} is not in allowed zones", key.name);
 
                 let log_msg = format!("Query rejected: {} is not in allowed zones", key.name);
-                let (_, receiver) = Self::create_and_send_response(
+                let (_, receiver) = Self::create_and_send_response_with_flags(
                     &query_data,
                     crate::dns_processor::DNS_RCODE_REFUSED,
+                    self.authoritative_dns,
                     Some(&log_msg),
                 );
 
@@ -322,9 +325,10 @@ impl QueryManager {
                     log::debug!("Hook returned -1, returning REFUSED response");
 
                     let log_msg = format!("Query refused by hook: {}", key.name);
-                    let (_, receiver) = Self::create_and_send_response(
+                    let (_, receiver) = Self::create_and_send_response_with_flags(
                         &query_data,
                         crate::dns_processor::DNS_RCODE_REFUSED,
+                        self.authoritative_dns,
                         Some(&log_msg),
                     );
 
@@ -387,6 +391,21 @@ impl QueryManager {
                                 "Adjusted TTL in cached response to {remaining_ttl} seconds"
                             );
                         }
+                    }
+
+                    // Set AA (Authoritative Answer) flag based on authoritative_dns setting
+                    if let Err(e) =
+                        crate::dns_parser::set_aa(&mut response_data, self.authoritative_dns)
+                    {
+                        log::error!("Failed to set AA bit in cached response: {e}");
+                    }
+
+                    // Set RA (Recursion Available) flag based on authoritative_dns setting
+                    // If authoritative_dns is false, we're a recursive resolver, so RA should be true
+                    if let Err(e) =
+                        crate::dns_parser::set_ra(&mut response_data, !self.authoritative_dns)
+                    {
+                        log::error!("Failed to set RA bit in cached response: {e}");
                     }
 
                     let response = DnsResponse {
@@ -610,9 +629,29 @@ impl QueryManager {
                                     );
                                 }
 
+                                // Set AA and RA flags based on authoritative_dns setting
+                                let mut response_data_with_flags = response_data.clone();
+
+                                // Set AA (Authoritative Answer) flag based on authoritative_dns setting
+                                if let Err(e) = crate::dns_parser::set_aa(
+                                    &mut response_data_with_flags,
+                                    self_clone.authoritative_dns,
+                                ) {
+                                    log::error!("Failed to set AA bit: {e}");
+                                }
+
+                                // Set RA (Recursion Available) flag based on authoritative_dns setting
+                                // If authoritative_dns is false, we're a recursive resolver, so RA should be true
+                                if let Err(e) = crate::dns_parser::set_ra(
+                                    &mut response_data_with_flags,
+                                    !self_clone.authoritative_dns,
+                                ) {
+                                    log::error!("Failed to set RA bit: {e}");
+                                }
+
                                 // Create a successful response
                                 let response = DnsResponse {
-                                    data: response_data,
+                                    data: response_data_with_flags,
                                     error: None,
                                 };
 
@@ -786,10 +825,11 @@ impl QueryManager {
         self.load_balancing_strategy
     }
 
-    /// Helper function to create a simple DNS response and send it
-    fn create_and_send_response(
+    /// Helper function to create a simple DNS response with flags and send it
+    fn create_and_send_response_with_flags(
         query_data: &[u8],
         rcode: u8,
+        authoritative_dns: bool,
         log_msg: Option<&str>,
     ) -> (
         broadcast::Sender<DnsResponse>,
@@ -798,8 +838,20 @@ impl QueryManager {
         // Create a response channel
         let (response_sender, receiver) = broadcast::channel(MAX_RECEIVERS);
 
-        // Create the DNS response
-        let dns_response = crate::dns_processor::create_dns_response(query_data, rcode, log_msg);
+        // Create the basic DNS response
+        let mut dns_response =
+            crate::dns_processor::create_dns_response(query_data, rcode, log_msg);
+
+        // Set AA (Authoritative Answer) flag based on authoritative_dns setting
+        if let Err(e) = crate::dns_parser::set_aa(&mut dns_response, authoritative_dns) {
+            log::error!("Failed to set AA bit: {e}");
+        }
+
+        // Set RA (Recursion Available) flag based on authoritative_dns setting
+        // If authoritative_dns is false, we're a recursive resolver, so RA should be true
+        if let Err(e) = crate::dns_parser::set_ra(&mut dns_response, !authoritative_dns) {
+            log::error!("Failed to set RA bit: {e}");
+        }
 
         // Create the response object
         let response = DnsResponse {
@@ -865,6 +917,21 @@ impl QueryManager {
             log::error!("Failed to update TTL in stale response: {e}");
         } else {
             log::debug!("Set TTL in stale response to {serve_stale_ttl} seconds");
+        }
+
+        // Get the authoritative_dns setting from the QueryManager
+        // For stale entries, we're always acting as a cache, so authoritative_dns should be false
+        let authoritative_dns = false;
+
+        // Set AA (Authoritative Answer) flag based on authoritative_dns setting
+        if let Err(e) = crate::dns_parser::set_aa(&mut response_data, authoritative_dns) {
+            log::error!("Failed to set AA bit in stale response: {e}");
+        }
+
+        // Set RA (Recursion Available) flag based on authoritative_dns setting
+        // If authoritative_dns is false, we're a recursive resolver, so RA should be true
+        if let Err(e) = crate::dns_parser::set_ra(&mut response_data, !authoritative_dns) {
+            log::error!("Failed to set RA bit in stale response: {e}");
         }
 
         // Create the stale response
