@@ -211,6 +211,12 @@ query_log_include_query_class = false
 # Uncomment to enable WebAssembly hooks
 # hooks_wasm_file = "hooks.wasm"
 
+# Enable WASI support for WebAssembly hooks
+# If true, the WebAssembly module will have access to WASI system calls
+# This is required for WebAssembly modules that use file system, environment variables, etc.
+# Default: false
+# hooks_wasm_wasi = false
+
 #------------------------------------------------------------------------------
 # EDNS-Client-Subnet Configuration
 #------------------------------------------------------------------------------

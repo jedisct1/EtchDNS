@@ -51,12 +51,16 @@ impl Hooks {
     /// # Arguments
     ///
     /// * `wasm_file_path` - Path to the WebAssembly file
+    /// * `enable_wasi` - Whether to enable WASI for the WebAssembly plugin
     ///
     /// # Returns
     ///
     /// A Result containing the Hooks instance or an error
     #[cfg(feature = "hooks")]
-    pub fn with_wasm_file<P: AsRef<Path>>(wasm_file_path: P) -> Result<Self, ExtismError> {
+    pub fn with_wasm_file<P: AsRef<Path>>(
+        wasm_file_path: P,
+        enable_wasi: bool,
+    ) -> Result<Self, ExtismError> {
         // Create a Wasm object from the file path
         let wasm = Wasm::file(wasm_file_path);
 
@@ -64,7 +68,8 @@ impl Hooks {
         let manifest = Manifest::new([wasm]);
 
         // Create the plugin from the manifest
-        let plugin = Plugin::new(manifest, vec![], false)?;
+        // The third parameter controls whether WASI is enabled
+        let plugin = Plugin::new(manifest, vec![], enable_wasi)?;
 
         // Return the Hooks instance with the plugin
         Ok(Self {
@@ -77,7 +82,7 @@ impl Hooks {
     /// This is a stub implementation when the hooks feature is disabled.
     /// It always returns an error.
     #[cfg(not(feature = "hooks"))]
-    pub fn with_wasm_file<P>(_wasm_file_path: P) -> Result<Self, &'static str> {
+    pub fn with_wasm_file<P>(_wasm_file_path: P, _enable_wasi: bool) -> Result<Self, &'static str> {
         Err("WebAssembly hooks support is not enabled. Recompile with the 'hooks' feature.")
     }
 

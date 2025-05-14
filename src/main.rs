@@ -213,6 +213,17 @@ struct Config {
     #[cfg(not(feature = "hooks"))]
     hooks_wasm_file: Option<String>,
 
+    /// Enable WASI support for WebAssembly hooks
+    /// If true, the WebAssembly module will have access to WASI system calls
+    #[serde(default)]
+    #[cfg(feature = "hooks")]
+    hooks_wasm_wasi: bool,
+
+    /// This field is a placeholder when hooks feature is disabled
+    #[serde(default, skip)]
+    #[cfg(not(feature = "hooks"))]
+    hooks_wasm_wasi: bool,
+
     /// Path to a file to log DNS queries to
     /// If not set, query logging is disabled
     #[serde(default)]
@@ -1909,7 +1920,18 @@ async fn main() -> EtchDnsResult<()> {
     // Load WebAssembly hooks if specified and hooks feature is enabled
     if let Some(wasm_file) = &config.hooks_wasm_file {
         info!("Loading WebAssembly hooks from file: {wasm_file}");
-        match hooks::Hooks::with_wasm_file(wasm_file) {
+        #[cfg(feature = "hooks")]
+        {
+            info!(
+                "WebAssembly WASI support is {}",
+                if config.hooks_wasm_wasi {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
+        match hooks::Hooks::with_wasm_file(wasm_file, config.hooks_wasm_wasi) {
             Ok(wasm_hooks) => {
                 // Replace the default hooks with the WebAssembly hooks
                 hooks = Arc::new(hooks::SharedHooks::with_hooks(wasm_hooks));

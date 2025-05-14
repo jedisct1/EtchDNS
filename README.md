@@ -125,6 +125,7 @@ Implement advanced DNS processing logic:
 ```toml
 # WebAssembly hooks
 hooks_wasm_file = "hooks.wasm"
+hooks_wasm_wasi = false  # Set to true if your plugin needs WASI support
 ```
 
 Use WebAssembly to implement custom filtering rules, monitoring, or modifications to DNS queries and responses.
@@ -269,6 +270,7 @@ To use WebAssembly extensions, specify the path to your compiled WASM file:
 ```toml
 # WebAssembly hooks
 hooks_wasm_file = "hooks.wasm"
+hooks_wasm_wasi = false  # Set to true if your plugin needs WASI support
 ```
 
 #### Building Your Own Extensions:
@@ -348,6 +350,17 @@ To build a WebAssembly extension for EtchDNS:
    ```
 
 For other languages, consult their respective WebAssembly compilation guides. The key requirement is that the resulting WASM module exports functions that match the hook interface defined by EtchDNS.
+
+#### WASI Support
+
+If your WebAssembly plugin requires access to system resources (file system, environment variables, etc.), you can enable WASI support in the configuration:
+
+```toml
+# Enable WASI for WebAssembly hooks
+hooks_wasm_wasi = true
+```
+
+This allows your plugin to use WASI system calls, but increases the security risk. Only enable this if your plugin specifically needs these capabilities.
 
 > **Note**: If you try to use WebAssembly hooks with an EtchDNS binary that was compiled without the `hooks` feature, the hooks functionality will not be available and any hook-related configuration will be ignored.
 
