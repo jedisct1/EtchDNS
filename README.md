@@ -4,14 +4,14 @@ EtchDNS is a high-performance caching DNS proxy with a focus on security, reliab
 
 ## Overview
 
-EtchDNS acts as an intermediary between your clients and upstream DNS servers, adding key features like caching, load balancing, and security filtering. It's designed to be fast, reliable, and configurable, with support for both traditional DNS protocols and modern DNS-over-HTTPS (DoH).
+EtchDNS acts as an intermediary between your clients and upstream DNS servers, adding key features like caching, load balancing, and security filtering. It's designed to be fast, reliable, and configurable, with support for both traditional DNS protocols and DNS-over-HTTP.
 
 ### Common Use Cases
 
 - **Secondary DNS Server**: Quickly set up a secondary DNS server by setting `authoritative_dns = true` and pointing to your primary DNS servers as upstreams (no zone transfers required)
 - **DNS Accelerator**: Place EtchDNS in front of recursive DNS servers to add caching, load balancing, and protection
 - **Security Filter**: Use domain filtering to control which DNS queries are permitted
-- **DoH Gateway**: Provide DNS-over-HTTPS for clients while using standard DNS for upstream servers
+- **DoH Gateway**: Provide DNS-over-HTTP for clients while using standard DNS for upstream servers
 
 ## Features
 
@@ -21,7 +21,7 @@ EtchDNS acts as an intermediary between your clients and upstream DNS servers, a
 - **Multiple Protocol Support**:
   - Standard DNS over UDP (port 53)
   - Standard DNS over TCP (port 53)
-  - DNS-over-HTTPS (DoH)
+  - DNS-over-HTTP (DoH)
 - **High Performance**:
   - Query aggregation to reduce duplicate upstream requests
   - Connection handling with protection against common DoS attacks
@@ -84,7 +84,7 @@ log_level = "info"
 # Addresses to listen on for standard DNS (UDP/TCP)
 listen_addresses = ["0.0.0.0:53", "[::]:53"]
 
-# Addresses for DNS-over-HTTPS (DoH)
+# Addresses for DNS-over-HTTP (DoH)
 # If empty, DoH is disabled
 doh_listen_addresses = ["127.0.0.1:443"]
 
