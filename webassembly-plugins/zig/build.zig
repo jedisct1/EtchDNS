@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
     // Create the plugin executable
     var plugin = b.addExecutable(.{
         .name = "etchdns-plugin",
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
