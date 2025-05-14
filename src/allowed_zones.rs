@@ -12,6 +12,7 @@ pub struct AllowedZones {
 
 impl AllowedZones {
     /// Create a new empty AllowedZones
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             zones: HashSet::new(),
@@ -90,6 +91,7 @@ impl AllowedZones {
     }
 
     /// Check if there are no allowed zones
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.zones.is_empty()
     }

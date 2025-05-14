@@ -10,9 +10,11 @@ use tokio::net::UdpSocket;
 use tokio::time;
 
 /// Minimum interval between probe queries (in seconds)
+#[allow(dead_code)]
 const MIN_PROBE_INTERVAL_SECS: u64 = 60;
 
 /// Structure to manage periodic probing of upstream DNS servers
+#[allow(dead_code)]
 pub struct ServerProber {
     /// List of upstream DNS servers to probe
     upstream_servers: Vec<String>,
@@ -27,11 +29,13 @@ pub struct ServerProber {
     probe_timeout: u64,
 }
 
+#[allow(dead_code)]
 impl ServerProber {
     /// Create a new ServerProber
     ///
     /// The probe_timeout defaults to server_timeout if not specified.
     /// The probe_interval defaults to max(60 seconds, server_timeout) if not specified.
+    #[allow(dead_code)]
     pub fn new(
         upstream_servers: Vec<String>,
         stats: Arc<SharedStats>,

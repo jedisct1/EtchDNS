@@ -144,6 +144,7 @@ impl QueryLogger {
     }
 
     /// Check if query logging is enabled
+    #[allow(dead_code)]
     pub async fn is_enabled(&self) -> bool {
         let inner = self.inner.lock().await;
         inner.file.is_some()

@@ -18,10 +18,12 @@ pub enum EtchDnsError {
 
     /// Error occurred while sending data
     #[error("Failed to send data: {0}")]
+    #[allow(dead_code)]
     SendError(#[source] io::Error),
 
     /// Error occurred while receiving data
     #[error("Failed to receive data: {0}")]
+    #[allow(dead_code)]
     ReceiveError(#[source] io::Error),
 
     /// Error occurred while processing DNS packet
@@ -30,6 +32,7 @@ pub enum EtchDnsError {
 
     /// Error occurred while managing client connections
     #[error("Client management error: {0}")]
+    #[allow(dead_code)]
     ClientError(String),
 
     /// Other errors
@@ -42,6 +45,7 @@ pub enum EtchDnsError {
 pub enum DnsError {
     /// Error occurred while parsing DNS packet
     #[error("DNS packet parsing error: {0}")]
+    #[allow(dead_code)]
     ParseError(String),
 
     /// Error occurred due to invalid DNS packet format

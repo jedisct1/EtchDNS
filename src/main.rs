@@ -35,7 +35,6 @@ mod stats;
 // Use our error types
 use errors::{DnsError, EtchDnsError, EtchDnsResult};
 use probe::probe_server;
-use query_logger::QueryLogger;
 use query_manager_new::QueryManager;
 use stats::SharedStats;
 

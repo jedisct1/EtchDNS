@@ -13,13 +13,17 @@ pub const DNS_OFFSET_QUESTION: usize = DNS_HEADER_SIZE; // Offset to the questio
 pub const DNS_MAX_UDP_PACKET_SIZE: usize = 512; // Standard maximum UDP packet size (RFC 1035)
 
 // DNS record types
+#[allow(dead_code)]
 pub const DNS_TYPE_A: u16 = 1;
 pub const DNS_TYPE_NS: u16 = 2;
 pub const DNS_TYPE_CNAME: u16 = 5;
+#[allow(dead_code)]
 pub const DNS_TYPE_SOA: u16 = 6;
 pub const DNS_TYPE_PTR: u16 = 12;
 pub const DNS_TYPE_MX: u16 = 15;
+#[allow(dead_code)]
 pub const DNS_TYPE_TXT: u16 = 16;
+#[allow(dead_code)]
 pub const DNS_TYPE_AAAA: u16 = 28;
 pub const DNS_TYPE_SRV: u16 = 33;
 pub const DNS_TYPE_OPT: u16 = 41;
@@ -35,8 +39,10 @@ pub const DNS_FLAG_DO: u16 = 0x8000; // DNSSEC OK flag in OPT record
 // DNS header flags
 const DNS_FLAGS_QR: u16 = 1u16 << 15; // Query/Response flag
 const DNS_FLAGS_TC: u16 = 1u16 << 9; // Truncation flag
+#[allow(dead_code)]
 const DNS_FLAGS_RD: u16 = 1u16 << 8; // Recursion Desired
 const DNS_FLAGS_CD: u16 = 1u16 << 4; // Checking Disabled (DNSSEC)
+#[allow(dead_code)]
 const DNS_FLAGS_AD: u16 = 1u16 << 5; // Authentic Data (DNSSEC)
 
 /// Validates that a DNS packet looks valid
@@ -293,6 +299,7 @@ pub fn is_dnssec_requested(packet: &[u8]) -> DnsResult<bool> {
 }
 
 /// Extracts the query name from a DNS packet
+#[allow(dead_code)]
 pub fn query_name(packet: &[u8]) -> DnsResult<String> {
     let qname_bytes = qname(packet)?;
     let qname_str = match str::from_utf8(&qname_bytes) {
@@ -1126,6 +1133,7 @@ pub fn truncate_dns_packet(
 /// # Returns
 ///
 /// A new Vec<u8> containing a truncated DNS response
+#[allow(dead_code)]
 pub fn create_truncated_response(query: &[u8]) -> DnsResult<Vec<u8>> {
     // Check that this is a query, not a response
     if is_response(query) {
@@ -1152,6 +1160,7 @@ pub fn create_truncated_response(query: &[u8]) -> DnsResult<Vec<u8>> {
 /// # Returns
 ///
 /// A new Vec<u8> containing the truncated DNS response
+#[allow(dead_code)]
 pub fn truncate_response(response: &[u8], max_size: usize) -> DnsResult<Vec<u8>> {
     // Check that this is a response, not a query
     if !is_response(response) {

@@ -132,6 +132,7 @@ impl QueryManager {
     }
 
     /// Set the statistics tracker
+    #[allow(dead_code)]
     pub fn set_stats(&mut self, stats: Arc<crate::stats::SharedStats>) {
         self.stats = Some(stats);
     }
@@ -167,6 +168,7 @@ impl QueryManager {
     }
 
     /// Get the hooks
+    #[allow(dead_code)]
     pub fn get_hooks(&self) -> Option<Arc<crate::hooks::SharedHooks>> {
         self.hooks.clone()
     }
@@ -742,6 +744,7 @@ impl QueryManager {
     }
 
     /// Get the number of in-flight queries
+    #[allow(dead_code)]
     pub async fn in_flight_count(&self) -> usize {
         let in_flight_queries = self.in_flight_queries.lock().await;
         in_flight_queries.len()
@@ -798,6 +801,7 @@ impl QueryManager {
     }
 
     /// Helper function to create a response and broadcast it
+    #[allow(dead_code)]
     fn create_and_broadcast_response(
         data: Vec<u8>,
         error: Option<String>,

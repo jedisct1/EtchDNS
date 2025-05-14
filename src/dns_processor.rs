@@ -6,7 +6,9 @@ use crate::dns_parser;
 use crate::errors::DnsResult;
 
 /// DNS Response Codes (RCODE)
+#[allow(dead_code)]
 pub const DNS_RCODE_NOERROR: u8 = 0; // No error
+#[allow(dead_code)]
 pub const DNS_RCODE_FORMERR: u8 = 1; // Format error
 pub const DNS_RCODE_SERVFAIL: u8 = 2; // Server failure
 pub const DNS_RCODE_NXDOMAIN: u8 = 3; // Non-existent domain
@@ -113,6 +115,7 @@ pub fn create_dns_response(query_data: &[u8], rcode: u8, log_msg: Option<&str>) 
 ///
 /// * `Some(Vec<u8>)` - If the query is of type ANY, returns a NOTIMP response
 /// * `None` - If the query is not of type ANY
+#[allow(dead_code)]
 pub fn handle_any_query(key: &DNSKey, query_data: &[u8]) -> Option<Vec<u8>> {
     if key.qtype == dns_parser::DNS_TYPE_ANY {
         let log_msg = format!(
@@ -138,6 +141,7 @@ pub fn handle_any_query(key: &DNSKey, query_data: &[u8]) -> Option<Vec<u8>> {
 /// # Returns
 ///
 /// * `Vec<u8>` - The REFUSED response
+#[allow(dead_code)]
 pub fn create_refused_response(query_data: &[u8]) -> Vec<u8> {
     create_dns_response(query_data, DNS_RCODE_REFUSED, None)
 }
@@ -163,6 +167,7 @@ pub fn create_refused_response(query_data: &[u8]) -> Vec<u8> {
 ///
 /// * `Ok(receiver)` - A receiver for the query response
 /// * `Err(e)` - If the query could not be processed
+#[allow(dead_code)]
 pub async fn process_client_query<T>(
     query_data: &[u8],
     client_addr: &str,

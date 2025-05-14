@@ -174,6 +174,7 @@ impl SharedHooks {
     }
 
     /// Get a reference to the inner Hooks
+    #[allow(dead_code)]
     pub fn inner(&self) -> &Arc<Hooks> {
         &self.inner
     }

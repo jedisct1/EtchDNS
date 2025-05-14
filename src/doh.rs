@@ -283,7 +283,7 @@ pub async fn start_doh_server(
             debug!("Accepted DoH connection from {}", client_addr);
 
             // Handle the connection
-            let client_addr_clone = client_addr.clone();
+            let client_addr_clone = client_addr;
             let service = hyper::service::service_fn(move |req| {
                 let query_manager = query_manager.clone();
                 let upstream_servers = upstream_servers.clone();

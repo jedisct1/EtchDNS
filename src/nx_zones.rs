@@ -12,6 +12,7 @@ pub struct NxZones {
 
 impl NxZones {
     /// Create a new empty NxZones
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             zones: HashSet::new(),
@@ -90,6 +91,7 @@ impl NxZones {
     }
 
     /// Check if there are no nonexistent zones
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.zones.is_empty()
     }
