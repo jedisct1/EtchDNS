@@ -1472,6 +1472,12 @@ async fn process_tcp_connection(
                                             let slot = slab
                                                 .push_front(client.clone())
                                                 .expect("Failed to add TCP client to slab");
+
+                                            // Increment the active TCP clients counter
+                                            if let Some(stats) = &client.query.stats {
+                                                stats.increment_active_tcp_clients().await;
+                                            }
+
                                             debug!(
                                                 "Added TCP client to slab with slot {}, slab size: {}",
                                                 slot,
@@ -1494,6 +1500,11 @@ async fn process_tcp_connection(
                                                     "Failed to remove TCP client from slab: {e}"
                                                 );
                                             } else {
+                                                // Decrement the active TCP clients counter
+                                                if let Some(stats) = &client.query.stats {
+                                                    stats.decrement_active_tcp_clients().await;
+                                                }
+
                                                 debug!(
                                                     "Removed TCP client from slab with slot {}, slab size: {}",
                                                     client_slot,
@@ -2270,6 +2281,12 @@ async fn main() -> EtchDnsResult<()> {
                                 let slot = slab
                                     .push_front(client.clone())
                                     .expect("Failed to add UDP client to slab");
+
+                                // Increment the active UDP clients counter
+                                if let Some(stats) = &client.query.stats {
+                                    stats.increment_active_udp_clients().await;
+                                }
+
                                 debug!(
                                     "Added UDP client to slab with slot {}, slab size: {}",
                                     slot,
@@ -2290,6 +2307,11 @@ async fn main() -> EtchDnsResult<()> {
                                 if let Err(e) = slab.remove(client_slot) {
                                     error!("Failed to remove UDP client from slab: {e}");
                                 } else {
+                                    // Decrement the active UDP clients counter
+                                    if let Some(stats) = &client.query.stats {
+                                        stats.decrement_active_udp_clients().await;
+                                    }
+
                                     debug!(
                                         "Removed UDP client from slab with slot {}, slab size: {}",
                                         client_slot,

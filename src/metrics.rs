@@ -81,6 +81,29 @@ fn format_metrics(stats: &GlobalStats) -> String {
     output.push_str("# TYPE etchdns_cache_misses counter\n");
     output.push_str(&format!("etchdns_cache_misses {}\n", stats.cache_misses));
 
+    output.push_str("# HELP etchdns_active_udp_clients Current number of active UDP clients\n");
+    output.push_str("# TYPE etchdns_active_udp_clients gauge\n");
+    output.push_str(&format!(
+        "etchdns_active_udp_clients {}\n",
+        stats.active_udp_clients
+    ));
+
+    output.push_str("# HELP etchdns_active_tcp_clients Current number of active TCP clients\n");
+    output.push_str("# TYPE etchdns_active_tcp_clients gauge\n");
+    output.push_str(&format!(
+        "etchdns_active_tcp_clients {}\n",
+        stats.active_tcp_clients
+    ));
+
+    output.push_str(
+        "# HELP etchdns_active_inflight_queries Current number of active in-flight queries\n",
+    );
+    output.push_str("# TYPE etchdns_active_inflight_queries gauge\n");
+    output.push_str(&format!(
+        "etchdns_active_inflight_queries {}\n",
+        stats.active_inflight_queries
+    ));
+
     // Per-resolver metrics
     output.push_str("# HELP etchdns_resolver_response_time_ms Average response time in milliseconds per resolver\n");
     output.push_str("# TYPE etchdns_resolver_response_time_ms gauge\n");

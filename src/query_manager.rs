@@ -750,6 +750,11 @@ impl QueryManager {
                 // Remove from the slab using the stored slab ID
                 match query_slab.remove(inflight_query.slab_id) {
                     Ok(_) => {
+                        // Decrement the active in-flight queries counter
+                        if let Some(stats) = &self_clone.stats {
+                            stats.decrement_active_inflight_queries().await;
+                        }
+
                         log::debug!(
                             "Successfully removed query from both map and slab, slab size: {}, map size: {}",
                             query_slab.len(),
@@ -783,6 +788,12 @@ impl QueryManager {
                 let inflight_query = InflightQuery { task, slab_id };
 
                 in_flight_queries.insert(key.clone(), inflight_query);
+
+                // Increment the active in-flight queries counter
+                if let Some(stats) = &self.stats {
+                    stats.increment_active_inflight_queries().await;
+                }
+
                 log::debug!(
                     "Added query to slab and in-flight map, slab size: {}, map size: {}",
                     query_slab.len(),
