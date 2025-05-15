@@ -50,6 +50,13 @@ const DNS_FLAGS_CD: u16 = 1u16 << 4; // Checking Disabled (DNSSEC)
 #[allow(dead_code)]
 const DNS_FLAGS_AD: u16 = 1u16 << 5; // Authentic Data (DNSSEC)
 
+// DNS opcodes (in bits 11-14 of the flags field)
+pub const DNS_OPCODE_QUERY: u8 = 0; // Standard query
+pub const DNS_OPCODE_IQUERY: u8 = 1; // Inverse query
+pub const DNS_OPCODE_STATUS: u8 = 2; // Server status request
+pub const DNS_OPCODE_NOTIFY: u8 = 4; // Zone change notification
+pub const DNS_OPCODE_UPDATE: u8 = 5; // Dynamic update
+
 /// Validates that a DNS packet looks valid
 pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
     // Check minimum packet size
@@ -63,6 +70,16 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
             size: packet.len(),
             max_size: DNS_MAX_PACKET_SIZE,
         });
+    }
+
+    // Check opcode - we only support standard queries (opcode 0)
+    if !is_response(packet) {
+        let op = opcode(packet);
+        if op != DNS_OPCODE_QUERY {
+            return Err(DnsError::UnsupportedOperation(format!(
+                "Unsupported opcode: {op}"
+            )));
+        }
     }
 
     // Check that we have at least one question
@@ -247,6 +264,18 @@ pub fn rcode(packet: &[u8]) -> u8 {
 #[inline]
 pub fn is_response(packet: &[u8]) -> bool {
     (BigEndian::read_u16(&packet[2..4]) & DNS_FLAGS_QR) == DNS_FLAGS_QR
+}
+
+/// Returns the opcode from the DNS packet
+#[inline]
+pub fn opcode(packet: &[u8]) -> u8 {
+    (packet[2] >> 3) & 0x0F
+}
+
+/// Checks if the packet is a standard query
+#[inline]
+pub fn is_standard_query(packet: &[u8]) -> bool {
+    !is_response(packet) && opcode(packet) == DNS_OPCODE_QUERY
 }
 
 /// Checks if the packet has the TC (truncated) bit set
@@ -1477,6 +1506,17 @@ mod tests {
         packet
     }
 
+    // Helper function to create a DNS query with a specific opcode
+    fn create_test_query_with_opcode(opcode: u8) -> Vec<u8> {
+        let mut packet = create_test_query();
+
+        // Set the opcode in the flags field (bits 11-14 of the flags field)
+        // Opcode is stored in bits 3-6 of byte 2
+        packet[2] = (packet[2] & 0x87) | ((opcode & 0x0F) << 3);
+
+        packet
+    }
+
     // Helper function to create a DNS query with EDNS0
     fn create_test_query_with_edns0(max_size: u16) -> Vec<u8> {
         let mut packet = create_test_query();
@@ -1615,6 +1655,29 @@ mod tests {
         assert_eq!(ancount(&recovered_query), 0);
         assert_eq!(nscount(&recovered_query), 0);
         assert_eq!(arcount(&recovered_query), 0);
+    }
+
+    #[test]
+    fn test_opcode_validation() {
+        // Test standard query (opcode 0)
+        let query = create_test_query();
+        assert_eq!(opcode(&query), DNS_OPCODE_QUERY);
+        assert!(is_standard_query(&query));
+        let result = validate_dns_packet(&query);
+        assert!(result.is_ok());
+
+        // Test update query (opcode 5)
+        let update_query = create_test_query_with_opcode(DNS_OPCODE_UPDATE);
+        assert_eq!(opcode(&update_query), DNS_OPCODE_UPDATE);
+        assert!(!is_standard_query(&update_query));
+        let result = validate_dns_packet(&update_query);
+        assert!(result.is_err());
+        match result {
+            Err(DnsError::UnsupportedOperation(msg)) => {
+                assert!(msg.contains("Unsupported opcode: 5"));
+            }
+            _ => panic!("Expected UnsupportedOperation error"),
+        }
     }
 
     #[test]

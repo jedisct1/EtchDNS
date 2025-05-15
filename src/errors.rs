@@ -56,6 +56,10 @@ pub enum DnsError {
     #[error("Invalid DNS packet: {0}")]
     InvalidPacket(String),
 
+    /// Error occurred due to unsupported DNS operation
+    #[error("Unsupported DNS operation: {0}")]
+    UnsupportedOperation(String),
+
     /// Error occurred due to DNS packet being too short
     #[error("DNS packet too short at offset {offset}")]
     PacketTooShort { offset: usize },
