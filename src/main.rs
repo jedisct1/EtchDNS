@@ -1447,6 +1447,8 @@ async fn process_tcp_connection(
                                             // If the slab is full, remove the oldest entry
                                             if slab.is_full() && slab.pop_back().is_some() {
                                                 debug!("TCP slab is full, removing oldest client");
+                                                // XXX - We should cancel the task - Until then, return
+                                                return;
                                             }
 
                                             // Add the new client to the front of the slab
@@ -2256,6 +2258,8 @@ async fn main() -> EtchDnsResult<()> {
                                 // If the slab is full, remove the oldest entry
                                 if slab.is_full() && slab.pop_back().is_some() {
                                     debug!("UDP slab is full, removing oldest client");
+                                    // XXX - We should cancel the task - Until then, return.
+                                    return;
                                 }
 
                                 // Add the new client to the front of the slab
