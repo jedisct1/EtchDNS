@@ -1179,7 +1179,12 @@ async fn retry_with_tcp(
 /// Trait for different types of clients
 #[async_trait]
 trait Client {
-    async fn process_query(&self);
+    /// Process a DNS query
+    ///
+    /// # Arguments
+    ///
+    /// * `cancel_rx` - A oneshot receiver that can be used to cancel the query processing
+    async fn process_query(&self, cancel_rx: tokio::sync::oneshot::Receiver<()>);
 }
 
 /// Structure to handle UDP clients
@@ -1470,7 +1475,9 @@ async fn process_tcp_connection(
                                         };
 
                                         // Process the client query directly
-                                        client.process_query().await;
+                                        let (cancel_tx, cancel_rx) =
+                                            tokio::sync::oneshot::channel();
+                                        client.process_query(cancel_rx).await;
                                         debug!("Completed processing task for TCP client {addr}");
 
                                         // Remove the client from the slab
@@ -1539,7 +1546,7 @@ impl DnsQueryProcessor for UDPClient {}
 
 #[async_trait]
 impl Client for TCPClient {
-    async fn process_query(&self) {
+    async fn process_query(&self, cancel_rx: tokio::sync::oneshot::Receiver<()>) {
         // Process the DNS query
         let client_addr = self.addr.to_string();
         if let Some((response_data, _)) = self
@@ -1585,7 +1592,7 @@ impl Client for TCPClient {
 
 #[async_trait]
 impl Client for UDPClient {
-    async fn process_query(&self) {
+    async fn process_query(&self, cancel_rx: tokio::sync::oneshot::Receiver<()>) {
         // Process the DNS query
         let client_addr = self.addr.to_string();
         if let Some((mut response_data, _)) = self
@@ -2281,7 +2288,8 @@ async fn main() -> EtchDnsResult<()> {
                             };
 
                             // Process the client query
-                            client.process_query().await;
+                            let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+                            client.process_query(cancel_rx).await;
                             debug!("Completed processing task for UDP client {addr}");
 
                             // Remove the client from the slab
