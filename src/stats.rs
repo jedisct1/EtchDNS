@@ -98,6 +98,10 @@ pub struct GlobalStats {
     pub active_tcp_clients: u64,
     /// Current number of active in-flight queries
     pub active_inflight_queries: u64,
+    /// Count of UDP receive errors
+    pub udp_receive_errors: u64,
+    /// Count of TCP accept errors
+    pub tcp_accept_errors: u64,
     /// Map of resolver addresses to their stats
     pub resolver_stats: HashMap<SocketAddr, ResolverStats>,
 }
@@ -116,6 +120,8 @@ impl GlobalStats {
             active_udp_clients: 0,
             active_tcp_clients: 0,
             active_inflight_queries: 0,
+            udp_receive_errors: 0,
+            tcp_accept_errors: 0,
             resolver_stats: HashMap::new(),
         }
     }
@@ -201,6 +207,16 @@ impl GlobalStats {
         if self.active_inflight_queries > 0 {
             self.active_inflight_queries -= 1;
         }
+    }
+
+    /// Increment the UDP receive errors counter
+    pub fn increment_udp_receive_errors(&mut self) {
+        self.udp_receive_errors += 1;
+    }
+
+    /// Increment the TCP accept errors counter
+    pub fn increment_tcp_accept_errors(&mut self) {
+        self.tcp_accept_errors += 1;
     }
 
     /// Get a list of resolvers sorted by response time (fastest first)
@@ -320,6 +336,18 @@ impl SharedStats {
     pub async fn get_resolvers_by_speed(&self) -> Vec<(SocketAddr, f64)> {
         let stats = self.inner.lock().await;
         stats.get_resolvers_by_speed()
+    }
+
+    /// Increment the UDP receive errors counter
+    pub async fn increment_udp_receive_errors(&self) {
+        let mut stats = self.inner.lock().await;
+        stats.increment_udp_receive_errors();
+    }
+
+    /// Increment the TCP accept errors counter
+    pub async fn increment_tcp_accept_errors(&self) {
+        let mut stats = self.inner.lock().await;
+        stats.increment_tcp_accept_errors();
     }
 }
 

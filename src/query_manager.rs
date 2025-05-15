@@ -1,3 +1,4 @@
+use log::{error, warn};
 use slabigator::Slab;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -127,9 +128,23 @@ impl QueryManager {
     ) -> Self {
         Self {
             in_flight_queries: Arc::new(Mutex::new(HashMap::new())),
-            query_slab: Arc::new(Mutex::new(
-                Slab::with_capacity(max_inflight_queries).expect("Failed to create query slab"),
-            )),
+            query_slab: {
+                let slab = match Slab::with_capacity(max_inflight_queries) {
+                    Ok(slab) => slab,
+                    Err(e) => {
+                        error!("Failed to create query slab with requested capacity: {}", e);
+                        // Fall back to a smaller size if allocation fails
+                        let smaller_capacity = std::cmp::max(100, max_inflight_queries / 2);
+                        warn!(
+                            "Falling back to smaller query slab capacity: {}",
+                            smaller_capacity
+                        );
+                        Slab::with_capacity(smaller_capacity)
+                            .expect("Critical error: Failed to allocate even minimal query slab")
+                    }
+                };
+                Arc::new(Mutex::new(slab))
+            },
             max_inflight_queries,
             server_timeout,
             dns_packet_len_max,
@@ -214,7 +229,16 @@ impl QueryManager {
         }
 
         // Extract the client IP (without port) from client_addr
-        let client_ip = client_addr.split(':').next().unwrap_or("unknown");
+        // Extract the client IP by finding the part before the colon (if there is one)
+        let client_ip = if let Some(ip) = client_addr.split(':').next() {
+            ip
+        } else {
+            warn!(
+                "Unable to parse client address: {}, using 'unknown'",
+                client_addr
+            );
+            "unknown"
+        };
 
         // Call the internal implementation with client IP
         self.submit_query_internal_with_client(key, query_data, resolver, client_ip)

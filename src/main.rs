@@ -1867,14 +1867,46 @@ async fn main() -> EtchDnsResult<()> {
     debug!(
         "Using a maximum of {max_udp_clients} UDP clients and {max_tcp_clients} TCP clients in the slabs"
     );
-    let udp_clients_slab: Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>> =
-        Arc::new(Mutex::new(
-            Slab::with_capacity(max_udp_clients).expect("Failed to create UDP clients slab"),
-        ));
-    let tcp_clients_slab: Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>> =
-        Arc::new(Mutex::new(
-            Slab::with_capacity(max_tcp_clients).expect("Failed to create TCP clients slab"),
-        ));
+    let udp_clients_slab: Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>> = {
+        let slab = match Slab::with_capacity(max_udp_clients) {
+            Ok(slab) => slab,
+            Err(e) => {
+                error!(
+                    "Failed to create UDP clients slab with requested capacity: {}",
+                    e
+                );
+                // Fall back to a smaller size if allocation fails
+                let smaller_capacity = std::cmp::max(100, max_udp_clients / 2);
+                warn!(
+                    "Falling back to smaller UDP client slab capacity: {}",
+                    smaller_capacity
+                );
+                Slab::with_capacity(smaller_capacity)
+                    .expect("Critical error: Failed to allocate even minimal UDP slab")
+            }
+        };
+        Arc::new(Mutex::new(slab))
+    };
+    let tcp_clients_slab: Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>> = {
+        let slab = match Slab::with_capacity(max_tcp_clients) {
+            Ok(slab) => slab,
+            Err(e) => {
+                error!(
+                    "Failed to create TCP clients slab with requested capacity: {}",
+                    e
+                );
+                // Fall back to a smaller size if allocation fails
+                let smaller_capacity = std::cmp::max(100, max_tcp_clients / 2);
+                warn!(
+                    "Falling back to smaller TCP client slab capacity: {}",
+                    smaller_capacity
+                );
+                Slab::with_capacity(smaller_capacity)
+                    .expect("Critical error: Failed to allocate even minimal TCP slab")
+            }
+        };
+        Arc::new(Mutex::new(slab))
+    };
 
     // Create global statistics tracker
     let global_stats = Arc::new(SharedStats::new());
@@ -2334,6 +2366,7 @@ async fn main() -> EtchDnsResult<()> {
 
         // Clone the ip validator for this task
         let task_ip_validator = ip_validator.clone();
+        let stats = global_stats.clone();
 
         // Create a task for this UDP socket
         let task = tokio::spawn(async move {
@@ -2486,6 +2519,13 @@ async fn main() -> EtchDnsResult<()> {
                     }
                     Err(e) => {
                         error!("Failed to receive packet on UDP {socket_addr}: {e}");
+
+                        // Add a small delay before trying again to prevent spinning the CPU
+                        // if there's a persistent error condition
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+
+                        // Increment error counter for monitoring
+                        stats.increment_udp_receive_errors().await;
                     }
                 }
             }
@@ -2509,6 +2549,7 @@ async fn main() -> EtchDnsResult<()> {
 
         // Clone the ip validator for this task
         let task_ip_validator = ip_validator.clone();
+        let stats = global_stats.clone();
 
         // Create a task for this TCP listener
         let task = tokio::spawn(async move {
@@ -2602,6 +2643,13 @@ async fn main() -> EtchDnsResult<()> {
                     }
                     Err(e) => {
                         error!("Failed to accept TCP connection on {socket_addr}: {e}");
+
+                        // Add a small delay before trying again to prevent spinning the CPU
+                        // if there's a persistent error condition
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+
+                        // Increment error counter for monitoring
+                        stats.increment_tcp_accept_errors().await;
                     }
                 }
             }

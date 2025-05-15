@@ -1,4 +1,4 @@
-use log::debug;
+use log::{debug, warn};
 use std::sync::Arc;
 
 use crate::dns_key::DNSKey;
@@ -288,11 +288,15 @@ pub trait DnsQueryProcessor {
         let client_query_id = crate::dns_parser::tid(query_data);
 
         // Extract client IP (without port) for EDNS-client-subnet
-        let client_ip = client_addr
-            .split(':')
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
+        let client_ip = if let Some(ip) = client_addr.split(':').next() {
+            ip.to_string()
+        } else {
+            warn!(
+                "Unable to parse client address: {}, using 'unknown'",
+                client_addr
+            );
+            "unknown".to_string()
+        };
 
         // Get ECS configuration from query_manager
         let enable_ecs = query_manager.get_enable_ecs();
