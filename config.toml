@@ -187,6 +187,13 @@ control_path = "/control"
 # Maximum number of concurrent connections to the HTTP control server (default: 5)
 max_control_connections = 10
 
+# Available endpoints:
+# - GET /control/status: Server status
+# - GET /control/cache: Get cache status information
+# - DELETE /control/cache: Clear entire cache
+# - DELETE /control/cache/zone/<example.com>: Clear entries for a specific zone
+# - DELETE /control/cache/name/<example.com>: Clear a specific entry
+
 #------------------------------------------------------------------------------
 # Logging Configuration
 #------------------------------------------------------------------------------

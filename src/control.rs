@@ -19,10 +19,15 @@ struct ApiResponse {
     message: String,
 }
 
-/// Request structure for zone clearing
+/// Cache status response structure
 #[derive(Serialize, Deserialize)]
-struct ClearZoneRequest {
-    zone: String,
+struct CacheStatusResponse {
+    success: bool,
+    size: usize,
+    capacity: usize,
+    hit_rate: f64,
+    hits: u64,
+    misses: u64,
 }
 
 /// Check if a domain is within a zone
@@ -87,8 +92,66 @@ async fn handle_request(
             Ok(response)
         }
 
-        // POST /cache/clear - Clear the DNS cache
-        (&Method::POST, "cache/clear") => {
+        // GET /cache - Return cache status
+        (&Method::GET, "cache") => {
+            if let Some(cache) = dns_cache {
+                // Get cache size and capacity
+                let size = cache.len();
+                let capacity = cache.capacity();
+
+                // Get cache hit/miss statistics from the stats system
+                // These would need to be passed in from the main application
+                // For now, we'll just use placeholder values
+                let hits = 0;
+                let misses = 0;
+                let hit_rate = if hits + misses > 0 {
+                    hits as f64 / (hits + misses) as f64
+                } else {
+                    0.0
+                };
+
+                let response = CacheStatusResponse {
+                    success: true,
+                    size,
+                    capacity,
+                    hit_rate,
+                    hits,
+                    misses,
+                };
+                let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                    error!("Failed to serialize API response: {e}");
+                    r#"{"success":false,"message":"Internal server error"}"#.to_string()
+                });
+
+                let mut response = Response::new(Full::new(Bytes::from(json)));
+                response.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    hyper::header::HeaderValue::from_static("application/json"),
+                );
+                Ok(response)
+            } else {
+                // DNS cache not available
+                let response = ApiResponse {
+                    success: false,
+                    message: "DNS cache not available".to_string(),
+                };
+                let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                    error!("Failed to serialize API response: {e}");
+                    r#"{"success":false,"message":"Internal server error"}"#.to_string()
+                });
+
+                let mut response = Response::new(Full::new(Bytes::from(json)));
+                response.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    hyper::header::HeaderValue::from_static("application/json"),
+                );
+                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                Ok(response)
+            }
+        }
+
+        // DELETE /cache - Clear the DNS cache
+        (&Method::DELETE, "cache") => {
             if let Some(cache) = dns_cache {
                 // Clear the cache
                 cache.clear();
@@ -132,66 +195,35 @@ async fn handle_request(
             }
         }
 
-        // POST /cache/clear/zone - Clear entries for a specific zone
-        (&Method::POST, "cache/clear/zone") => {
+        // DELETE /cache/zone/<zone> - Clear entries for a specific zone
+        (&Method::DELETE, zone_path) if zone_path.starts_with("cache/zone/") => {
             if let Some(cache) = dns_cache {
-                // Parse the request body to get the zone
-                let body = req.into_body();
-                let body_bytes = match http_body_util::BodyExt::collect(body).await {
-                    Ok(collected) => collected.to_bytes(),
-                    Err(e) => {
-                        error!("Failed to read request body: {e}");
-                        let response = ApiResponse {
-                            success: false,
-                            message: format!("Failed to read request body: {e}"),
-                        };
-                        let json = serde_json::to_string(&response).unwrap_or_else(|e| {
-                            error!("Failed to serialize API response: {e}");
-                            r#"{"success":false,"message":"Internal server error"}"#.to_string()
-                        });
+                // Extract the zone from the path
+                let zone = zone_path.strip_prefix("cache/zone/").unwrap_or("");
+                if zone.is_empty() {
+                    let response = ApiResponse {
+                        success: false,
+                        message: "Zone parameter is required".to_string(),
+                    };
+                    let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                        error!("Failed to serialize API response: {e}");
+                        r#"{"success":false,"message":"Internal server error"}"#.to_string()
+                    });
 
-                        let mut response = Response::new(Full::new(Bytes::from(json)));
-                        response.headers_mut().insert(
-                            hyper::header::CONTENT_TYPE,
-                            hyper::header::HeaderValue::from_static("application/json"),
-                        );
-                        *response.status_mut() = StatusCode::BAD_REQUEST;
-                        return Ok(response);
-                    }
-                };
-
-                // Parse the JSON body
-                let clear_zone_request: ClearZoneRequest = match serde_json::from_slice(&body_bytes)
-                {
-                    Ok(req) => req,
-                    Err(e) => {
-                        error!("Failed to parse request body: {e}");
-                        let response = ApiResponse {
-                            success: false,
-                            message: format!("Failed to parse request body: {e}"),
-                        };
-                        let json = serde_json::to_string(&response).unwrap_or_else(|e| {
-                            error!("Failed to serialize API response: {e}");
-                            r#"{"success":false,"message":"Internal server error"}"#.to_string()
-                        });
-
-                        let mut response = Response::new(Full::new(Bytes::from(json)));
-                        response.headers_mut().insert(
-                            hyper::header::CONTENT_TYPE,
-                            hyper::header::HeaderValue::from_static("application/json"),
-                        );
-                        *response.status_mut() = StatusCode::BAD_REQUEST;
-                        return Ok(response);
-                    }
-                };
-
-                let zone = clear_zone_request.zone;
+                    let mut response = Response::new(Full::new(Bytes::from(json)));
+                    response.headers_mut().insert(
+                        hyper::header::CONTENT_TYPE,
+                        hyper::header::HeaderValue::from_static("application/json"),
+                    );
+                    *response.status_mut() = StatusCode::BAD_REQUEST;
+                    return Ok(response);
+                }
 
                 // Get the initial cache size
                 let initial_size = cache.len();
 
                 // Use retain to keep only entries that are NOT in the specified zone
-                cache.retain(|key, _| !is_domain_in_zone(&key.name, &zone));
+                cache.retain(|key, _| !is_domain_in_zone(&key.name, zone));
 
                 // Get the new cache size
                 let new_size = cache.len();
@@ -203,6 +235,82 @@ async fn handle_request(
                     success: true,
                     message: format!(
                         "Cleared {removed_entries} entries for zone {zone} from DNS cache. New size: {new_size}"
+                    ),
+                };
+                let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                    error!("Failed to serialize API response: {e}");
+                    r#"{"success":false,"message":"Internal server error"}"#.to_string()
+                });
+
+                let mut response = Response::new(Full::new(Bytes::from(json)));
+                response.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    hyper::header::HeaderValue::from_static("application/json"),
+                );
+                Ok(response)
+            } else {
+                // DNS cache not available
+                let response = ApiResponse {
+                    success: false,
+                    message: "DNS cache not available".to_string(),
+                };
+                let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                    error!("Failed to serialize API response: {e}");
+                    r#"{"success":false,"message":"Internal server error"}"#.to_string()
+                });
+
+                let mut response = Response::new(Full::new(Bytes::from(json)));
+                response.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    hyper::header::HeaderValue::from_static("application/json"),
+                );
+                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                Ok(response)
+            }
+        }
+
+        // DELETE /cache/name/<name> - Clear a specific entry
+        (&Method::DELETE, name_path) if name_path.starts_with("cache/name/") => {
+            if let Some(cache) = dns_cache {
+                // Extract the name from the path
+                let name = name_path.strip_prefix("cache/name/").unwrap_or("");
+                if name.is_empty() {
+                    let response = ApiResponse {
+                        success: false,
+                        message: "Name parameter is required".to_string(),
+                    };
+                    let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                        error!("Failed to serialize API response: {e}");
+                        r#"{"success":false,"message":"Internal server error"}"#.to_string()
+                    });
+
+                    let mut response = Response::new(Full::new(Bytes::from(json)));
+                    response.headers_mut().insert(
+                        hyper::header::CONTENT_TYPE,
+                        hyper::header::HeaderValue::from_static("application/json"),
+                    );
+                    *response.status_mut() = StatusCode::BAD_REQUEST;
+                    return Ok(response);
+                }
+
+                // Get the initial cache size
+                let initial_size = cache.len();
+
+                // Use retain to keep only entries that don't match the specified name
+                // We need to normalize the name for comparison
+                let normalized_name = crate::dns_key::DNSKey::normalize_name(name);
+                cache.retain(|key, _| key.name != normalized_name);
+
+                // Get the new cache size
+                let new_size = cache.len();
+                let removed_entries = initial_size - new_size;
+
+                info!("Cleared {removed_entries} entries for name {name} from DNS cache");
+
+                let response = ApiResponse {
+                    success: true,
+                    message: format!(
+                        "Cleared {removed_entries} entries for name {name} from DNS cache. New size: {new_size}"
                     ),
                 };
                 let json = serde_json::to_string(&response).unwrap_or_else(|e| {
@@ -269,7 +377,7 @@ pub async fn start_control_server(
 
     if dns_cache.is_some() {
         info!(
-            "DNS cache control API enabled at {control_path}/cache/clear and {control_path}/cache/clear/zone"
+            "DNS cache control API enabled at {control_path}/cache (GET/DELETE), {control_path}/cache/zone/<zone> (DELETE), and {control_path}/cache/name/<name> (DELETE)"
         );
     } else {
         warn!("DNS cache not available for control API");

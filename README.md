@@ -228,8 +228,10 @@ control_path = "/control"
 
 Available endpoints:
 - `GET /control/status`: Server status
-- `POST /control/cache/clear`: Clear entire cache
-- `POST /control/cache/clear/zone`: Clear specific zone
+- `GET /control/cache`: Get cache status information
+- `DELETE /control/cache`: Clear entire cache
+- `DELETE /control/cache/zone/<example.com>`: Clear entries for a specific zone
+- `DELETE /control/cache/name/<example.com>`: Clear a specific entry
 
 ### WebAssembly Extensions (WIP)
 
