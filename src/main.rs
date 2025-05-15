@@ -768,34 +768,11 @@ impl ClientQuery {
         })?;
 
         // Create a new UDP socket for the upstream connection
-        let mut upstream_socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
+        let upstream_socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
             DnsError::UpstreamError(format!(
                 "Failed to bind socket for upstream connection: {e}"
             ))
         })?;
-        _ = &mut upstream_socket;
-        #[cfg(target_os = "linux")]
-        {
-            let upstream_socket_std = upstream_socket.into_std().map_err(|e| {
-                DnsError::UpstreamError(format!(
-                    "Failed to convert upstream socket to standard: {e}"
-                ))
-            })?;
-            let upstream_socket_fd = upstream_socket_std.as_raw_fd();
-            let filter = bpfprog!(8,72 0 0 4,53 0 5 17,72 0 0 12,21 0 3 1,72 0 0 18,37 1 0 1,6 0 0 262144,6 0 0 0);
-            bpf::attach_filter(upstream_socket_fd, filter).ok();
-            upstream_socket_std.set_nonblocking(true).map_err(|e| {
-                DnsError::UpstreamError(format!(
-                    "Failed to set upstream socket to non-blocking: {e}"
-                ))
-            })?;
-            upstream_socket = UdpSocket::from_std(upstream_socket_std).map_err(|e| {
-                DnsError::UpstreamError(format!(
-                    "Failed to convert standard socket back to UDP: {e}"
-                ))
-            })?;
-        }
-        upstream_socket.set_tos(0x10).ok();
 
         // If we get here, the packet is valid
         // Set EDNS0 with the configured maximum payload size
@@ -1768,7 +1745,7 @@ async fn main() -> EtchDnsResult<()> {
     // Bind to each address
     for socket_addr in &socket_addrs {
         // Bind UDP socket
-        let udp_socket = UdpSocket::bind(socket_addr)
+        let mut udp_socket = UdpSocket::bind(socket_addr)
             .await
             .map_err(EtchDnsError::SocketBindError)?;
         info!(
@@ -1777,6 +1754,29 @@ async fn main() -> EtchDnsResult<()> {
                 .local_addr()
                 .map_err(EtchDnsError::SocketBindError)?
         );
+        _ = &mut udp_socket;
+        #[cfg(target_os = "linux")]
+        {
+            let upstream_socket_std = upstream_socket.into_std().map_err(|e| {
+                DnsError::UpstreamError(format!(
+                    "Failed to convert upstream socket to standard: {e}"
+                ))
+            })?;
+            let upstream_socket_fd = upstream_socket_std.as_raw_fd();
+            let filter = bpfprog!(8,72 0 0 4,53 0 5 17,72 0 0 12,21 0 3 1,72 0 0 18,37 1 0 1,6 0 0 262144,6 0 0 0);
+            bpf::attach_filter(upstream_socket_fd, filter).ok();
+            upstream_socket_std.set_nonblocking(true).map_err(|e| {
+                DnsError::UpstreamError(format!(
+                    "Failed to set upstream socket to non-blocking: {e}"
+                ))
+            })?;
+            udp_socket = UdpSocket::from_std(upstream_socket_std).map_err(|e| {
+                DnsError::UpstreamError(format!(
+                    "Failed to convert standard socket back to UDP: {e}"
+                ))
+            })?;
+        }
+        udp_socket.set_tos(0x10).ok();
 
         // Create a shareable UDP socket
         udp_sockets.push(Arc::new(udp_socket));
