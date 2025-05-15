@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <strong>Visit the website for complete documentation: <a href="https://etchdns.dnscrypt.info">https://etchdns.dnscrypt.info</a></strong>
+</p>
+
+<p align="center">
   <a href="#key-features">Key Features</a> •
   <a href="#quickstart">Quickstart</a> •
   <a href="#installation">Installation</a> •
