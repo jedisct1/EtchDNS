@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <strong>Visit the website for complete documentation: <a href="https://etchdns.dnscrypt.info">https://etchdns.dnscrypt.info</a></strong>
+  <strong>Visit the website for complete documentation: <a href="https://etchdns.dnscrypt.info">EtchDNS</a></strong>
 </p>
 
 <p align="center">
