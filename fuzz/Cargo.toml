@@ -54,3 +54,43 @@ path = "fuzz_targets/dns_key_from_packet.rs"
 test = false
 doc = false
 bench = false
+
+# Fuzz target for IpValidator::validate_ip_str
+[[bin]]
+name = "ip_validator_validate"
+path = "fuzz_targets/ip_validator_validate.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz target for IpRange::from_cidr
+[[bin]]
+name = "ip_range_from_cidr"
+path = "fuzz_targets/ip_range_from_cidr.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz target for create_dns_response
+[[bin]]
+name = "create_dns_response"
+path = "fuzz_targets/create_dns_response.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz target for extract_client_ip
+[[bin]]
+name = "extract_client_ip"
+path = "fuzz_targets/extract_client_ip.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz target for RateLimiter::is_allowed
+[[bin]]
+name = "rate_limiter_is_allowed"
+path = "fuzz_targets/rate_limiter_is_allowed.rs"
+test = false
+doc = false
+bench = false

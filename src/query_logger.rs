@@ -177,9 +177,7 @@ impl QueryLogger {
 
         // Rename the current log file
         if fs::rename(log_path, &new_path).is_err() {
-            error!(
-                "Failed to rename log file from {log_path_str} to {new_filename}"
-            );
+            error!("Failed to rename log file from {log_path_str} to {new_filename}");
             // Try to reopen the original file
             match OpenOptions::new().create(true).append(true).open(log_path) {
                 Ok(file) => {
