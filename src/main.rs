@@ -1450,10 +1450,17 @@ async fn process_tcp_connection(
                                             let mut slab = tcp_clients_slab.lock().await;
 
                                             // If the slab is full, remove the oldest entry
-                                            if slab.is_full() && slab.pop_back().is_some() {
+                                            if slab.is_full() {
                                                 debug!("TCP slab is full, removing oldest client");
-                                                // XXX - We should cancel the task - Until then, return
-                                                return;
+                                                // Remove the oldest client from the slab
+                                                if slab.pop_back().is_some() {
+                                                    debug!("Removed oldest client from TCP slab");
+                                                } else {
+                                                    debug!(
+                                                        "Failed to remove oldest client from TCP slab"
+                                                    );
+                                                    return;
+                                                }
                                             }
 
                                             // Add the new client to the front of the slab
@@ -1549,20 +1556,40 @@ impl Client for TCPClient {
     async fn process_query(&self, cancel_rx: tokio::sync::oneshot::Receiver<()>) {
         // Process the DNS query
         let client_addr = self.addr.to_string();
-        if let Some((response_data, _)) = self
-            .process_dns_query(
-                &self.query.data,
-                &client_addr,
-                "TCP",
-                &self.query_manager,
-                &self.query.upstream_servers,
-                self.query.server_timeout,
-                self.query.dns_packet_len_max,
-                self.query.stats.clone(),
-                self.query.load_balancing_strategy,
-            )
-            .await
-        {
+
+        // Create a future for the DNS query processing
+        let query_future = self.process_dns_query(
+            &self.query.data,
+            &client_addr,
+            "TCP",
+            &self.query_manager,
+            &self.query.upstream_servers,
+            self.query.server_timeout,
+            self.query.dns_packet_len_max,
+            self.query.stats.clone(),
+            self.query.load_balancing_strategy,
+        );
+
+        // Apply a 10-second timeout to the query future
+        let timeout_duration = std::time::Duration::from_secs(10);
+        let timed_query_future = tokio::time::timeout(timeout_duration, query_future);
+
+        // Use tokio::select to handle both the query result and cancellation
+        let response_opt = tokio::select! {
+            _ = cancel_rx => {
+                debug!("TCP query for client {} cancelled", self.addr);
+                None
+            },
+            result = timed_query_future => match result {
+                Ok(response) => response,
+                Err(_) => {
+                    debug!("TCP query for client {} timed out after 10 seconds", self.addr);
+                    None
+                }
+            }
+        };
+
+        if let Some((response_data, _)) = response_opt {
             // For TCP, we need to prepend the 2-byte length field
             let response_len = response_data.len() as u16;
             let mut tcp_response = Vec::with_capacity(response_data.len() + 2);
@@ -1595,20 +1622,40 @@ impl Client for UDPClient {
     async fn process_query(&self, cancel_rx: tokio::sync::oneshot::Receiver<()>) {
         // Process the DNS query
         let client_addr = self.addr.to_string();
-        if let Some((mut response_data, _)) = self
-            .process_dns_query(
-                &self.query.data,
-                &client_addr,
-                "UDP",
-                &self.query_manager,
-                &self.query.upstream_servers,
-                self.query.server_timeout,
-                self.query.dns_packet_len_max,
-                self.query.stats.clone(),
-                self.query.load_balancing_strategy,
-            )
-            .await
-        {
+
+        // Create a future for the DNS query processing
+        let query_future = self.process_dns_query(
+            &self.query.data,
+            &client_addr,
+            "UDP",
+            &self.query_manager,
+            &self.query.upstream_servers,
+            self.query.server_timeout,
+            self.query.dns_packet_len_max,
+            self.query.stats.clone(),
+            self.query.load_balancing_strategy,
+        );
+
+        // Apply a 10-second timeout to the query future
+        let timeout_duration = std::time::Duration::from_secs(10);
+        let timed_query_future = tokio::time::timeout(timeout_duration, query_future);
+
+        // Use tokio::select to handle both the query result and cancellation
+        let response_opt = tokio::select! {
+            _ = cancel_rx => {
+                debug!("UDP query for client {} cancelled", self.addr);
+                None
+            },
+            result = timed_query_future => match result {
+                Ok(response) => response,
+                Err(_) => {
+                    debug!("UDP query for client {} timed out after 10 seconds", self.addr);
+                    None
+                }
+            }
+        };
+
+        if let Some((mut response_data, _)) = response_opt {
             // Check if the response exceeds the maximum UDP response size
             if response_data.len() > self.query.max_udp_response_size {
                 debug!(
@@ -2263,10 +2310,15 @@ async fn main() -> EtchDnsResult<()> {
                                 let mut slab = udp_clients_slab_clone.lock().await;
 
                                 // If the slab is full, remove the oldest entry
-                                if slab.is_full() && slab.pop_back().is_some() {
+                                if slab.is_full() {
                                     debug!("UDP slab is full, removing oldest client");
-                                    // XXX - We should cancel the task - Until then, return.
-                                    return;
+                                    // Remove the oldest client from the slab
+                                    if slab.pop_back().is_some() {
+                                        debug!("Removed oldest client from UDP slab");
+                                    } else {
+                                        debug!("Failed to remove oldest client from UDP slab");
+                                        return;
+                                    }
                                 }
 
                                 // Add the new client to the front of the slab
