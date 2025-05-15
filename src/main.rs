@@ -1570,8 +1570,8 @@ impl Client for TCPClient {
             self.query.load_balancing_strategy,
         );
 
-        // Apply a 10-second timeout to the query future
-        let timeout_duration = std::time::Duration::from_secs(10);
+        // Apply a timeout of twice the server_timeout to the query future
+        let timeout_duration = std::time::Duration::from_secs(self.query.server_timeout * 2);
         let timed_query_future = tokio::time::timeout(timeout_duration, query_future);
 
         // Use tokio::select to handle both the query result and cancellation
@@ -1583,7 +1583,7 @@ impl Client for TCPClient {
             result = timed_query_future => match result {
                 Ok(response) => response,
                 Err(_) => {
-                    debug!("TCP query for client {} timed out after 10 seconds", self.addr);
+                    debug!("TCP query for client {} timed out after {} seconds", self.addr, self.query.server_timeout * 2);
                     None
                 }
             }
@@ -1636,8 +1636,8 @@ impl Client for UDPClient {
             self.query.load_balancing_strategy,
         );
 
-        // Apply a 10-second timeout to the query future
-        let timeout_duration = std::time::Duration::from_secs(10);
+        // Apply a timeout of twice the server_timeout to the query future
+        let timeout_duration = std::time::Duration::from_secs(self.query.server_timeout * 2);
         let timed_query_future = tokio::time::timeout(timeout_duration, query_future);
 
         // Use tokio::select to handle both the query result and cancellation
@@ -1649,7 +1649,7 @@ impl Client for UDPClient {
             result = timed_query_future => match result {
                 Ok(response) => response,
                 Err(_) => {
-                    debug!("UDP query for client {} timed out after 10 seconds", self.addr);
+                    debug!("UDP query for client {} timed out after {} seconds", self.addr, self.query.server_timeout * 2);
                     None
                 }
             }
