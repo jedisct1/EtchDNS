@@ -14,6 +14,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 
+use etchdns::ip_validator::{IpRange, IpValidator};
+
 mod allowed_zones;
 mod cache;
 mod control;
@@ -147,6 +149,26 @@ struct Config {
     /// Maximum number of concurrent connections to the HTTP metrics server
     #[serde(default = "default_max_metrics_connections")]
     max_metrics_connections: usize,
+
+    /// Whether to enable strict IP validation
+    #[serde(default)]
+    enable_strict_ip_validation: bool,
+
+    /// List of blocked IP ranges (in CIDR notation, e.g., "192.168.0.0/16")
+    #[serde(default)]
+    blocked_ip_ranges: Vec<String>,
+
+    /// Block private IP address ranges
+    #[serde(default = "default_block_private_ip_ranges")]
+    block_private_ips: bool,
+
+    /// Block loopback IP address ranges
+    #[serde(default = "default_block_loopback_ip_ranges")]
+    block_loopback_ips: bool,
+
+    /// Minimum port to allow from clients
+    #[serde(default = "default_min_client_port")]
+    min_client_port: u16,
 
     /// Maximum number of concurrent connections to the DoH server
     #[serde(default = "default_max_doh_connections")]
@@ -438,6 +460,18 @@ fn default_ecs_prefix_v4() -> u8 {
 
 fn default_ecs_prefix_v6() -> u8 {
     56 // Send first 56 bits of IPv6 address (hide last 72 bits)
+}
+
+fn default_block_private_ip_ranges() -> bool {
+    true // Block private IP ranges by default
+}
+
+fn default_block_loopback_ip_ranges() -> bool {
+    true // Block loopback IP ranges by default
+}
+
+fn default_min_client_port() -> u16 {
+    1024 // Privileged ports are below 1024
 }
 
 impl Config {
@@ -1779,15 +1813,15 @@ async fn main() -> EtchDnsResult<()> {
         );
     }
 
-    // Get the socket addresses to bind to
-    let socket_addrs = config.socket_addrs()?;
+    // Get the socket addresses to bind to (Arc for sharing)
+    let socket_addrs = Arc::new(config.socket_addrs()?);
 
     // Create vectors to store all the sockets
     let mut udp_sockets = Vec::new();
     let mut tcp_listeners = Vec::new();
 
     // Bind to each address
-    for socket_addr in &socket_addrs {
+    for socket_addr in socket_addrs.iter() {
         // Bind UDP socket
         let udp_socket = UdpSocket::bind(socket_addr)
             .await
@@ -1849,6 +1883,41 @@ async fn main() -> EtchDnsResult<()> {
     // Create a Hooks structure
     let mut hooks = Arc::new(hooks::SharedHooks::new());
     debug!("Created hooks structure");
+
+    // Create an IP validator with the configured settings
+    let mut validator = IpValidator::new();
+
+    // Add all the custom blocked IP ranges
+    for cidr in &config.blocked_ip_ranges {
+        match IpRange::from_cidr(cidr) {
+            Ok(range) => {
+                validator = validator.add_blocked_range(range);
+            }
+            Err(e) => {
+                warn!("Invalid IP range format {cidr}: {e}");
+            }
+        }
+    }
+
+    // Set the allowed port range
+    validator = validator.allow_ports(config.min_client_port, 65535);
+
+    // Set private IP address blocking
+    if !config.block_private_ips {
+        validator = validator.allow_private();
+    }
+
+    // Set loopback IP address blocking
+    if !config.block_loopback_ips {
+        validator = validator.allow_loopback();
+    }
+
+    let ip_validator = Arc::new(validator);
+
+    debug!(
+        "Created IP validator with {} blocked ranges",
+        config.blocked_ip_ranges.len()
+    );
 
     // Create a query logger if configured
     let query_logger = Arc::new(query_logger::QueryLogger::new(
@@ -2182,6 +2251,9 @@ async fn main() -> EtchDnsResult<()> {
                 .parse::<load_balancer::LoadBalancingStrategy>()
                 .unwrap();
 
+            // Clone the IP validator for this task
+            let doh_ip_validator = ip_validator.clone();
+
             // Create a task for the DoH server
             let doh_task = tokio::spawn(async move {
                 info!("Starting DoH server on {doh_addr}");
@@ -2196,6 +2268,8 @@ async fn main() -> EtchDnsResult<()> {
                     max_connections,
                     doh_rate_limiter,
                     load_balancing_strategy,
+                    Some(doh_ip_validator),
+                    config.enable_strict_ip_validation,
                 )
                 .await
                 {
@@ -2249,13 +2323,17 @@ async fn main() -> EtchDnsResult<()> {
     // Create a task for each UDP socket
     for (i, socket) in udp_sockets.iter().enumerate() {
         let socket = socket.clone();
-        let socket_addr = socket_addrs[i];
+        let all_socket_addrs = socket_addrs.clone();
+        let socket_addr = (*all_socket_addrs)[i];
         let udp_clients_slab = udp_clients_slab.clone();
         let upstream_servers = upstream_servers.clone();
         let query_manager = query_manager.clone();
         let udp_rate_limiter = udp_rate_limiter.clone();
-        // Create a clone of all socket addresses for checking source addresses
+        // Share the socket addresses for checking source addresses
         let all_socket_addrs = socket_addrs.clone();
+
+        // Clone the ip validator for this task
+        let task_ip_validator = ip_validator.clone();
 
         // Create a task for this UDP socket
         let task = tokio::spawn(async move {
@@ -2272,24 +2350,44 @@ async fn main() -> EtchDnsResult<()> {
                     Ok((len, addr)) => {
                         debug!("Received packet of size {len} bytes from UDP client {addr}");
 
-                        // Validate client source port is >= 1024
-                        if addr.port() < 1024 {
-                            warn!(
-                                "Disallowing query from UDP client {addr} with reserved port {}, dropping query",
-                                addr.port()
-                            );
-                            continue;
-                        }
+                        // Apply IP validation to the client address based on configuration
+                        if config.enable_strict_ip_validation {
+                            // Use the full IP validator with all restrictions
+                            match task_ip_validator.validate_ip(addr.ip()) {
+                                Ok(_) => {
+                                    // Check port as a separate step for better logging
+                                    if let Err(e) = task_ip_validator.validate_port(addr.port()) {
+                                        warn!("Disallowing query from UDP client {addr}: {e}");
+                                        continue;
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Disallowing query from UDP client {addr}: {e}");
+                                    continue;
+                                }
+                            }
+                        } else {
+                            // Even with strict validation disabled, still perform basic validation
 
-                        // Check if client source address matches one of our listener addresses
-                        if all_socket_addrs
-                            .iter()
-                            .any(|listener_addr| listener_addr.ip() == addr.ip())
-                        {
-                            warn!(
-                                "Disallowing query from UDP client {addr} with source address matching one of our listener addresses, dropping query"
-                            );
-                            continue;
+                            // Validate client source port is >= 1024
+                            if addr.port() < 1024 {
+                                warn!(
+                                    "Disallowing query from UDP client {addr} with reserved port {}, dropping query",
+                                    addr.port()
+                                );
+                                continue;
+                            }
+
+                            // Check if client source address matches one of our listener addresses
+                            if all_socket_addrs
+                                .iter()
+                                .any(|listener_addr| listener_addr.ip() == addr.ip())
+                            {
+                                warn!(
+                                    "Disallowing query from UDP client {addr} with source address matching one of our listener addresses, dropping query"
+                                );
+                                continue;
+                            }
                         }
 
                         // Check rate limit for UDP client if enabled
@@ -2396,14 +2494,21 @@ async fn main() -> EtchDnsResult<()> {
         tasks.push(task);
     }
 
+    // Clone the socket addresses vector to use in the TCP tasks
+    let tcp_socket_addrs = socket_addrs.clone();
+
     // Create a task for each TCP listener
     for (i, listener) in tcp_listeners.iter().enumerate() {
         let listener = listener.clone();
-        let socket_addr = socket_addrs[i];
+        let all_socket_addrs = tcp_socket_addrs.clone();
+        let socket_addr = (*all_socket_addrs)[i];
         let tcp_clients_slab = tcp_clients_slab.clone();
         let upstream_servers = upstream_servers.clone();
         let query_manager = query_manager.clone();
         let tcp_rate_limiter = tcp_rate_limiter.clone();
+
+        // Clone the ip validator for this task
+        let task_ip_validator = ip_validator.clone();
 
         // Create a task for this TCP listener
         let task = tokio::spawn(async move {
@@ -2416,6 +2521,48 @@ async fn main() -> EtchDnsResult<()> {
                 match listener.accept().await {
                     Ok((stream, addr)) => {
                         debug!("Accepted TCP connection from {addr}");
+
+                        // Apply IP validation to the client address based on configuration
+                        if config.enable_strict_ip_validation {
+                            // Use the full IP validator with all restrictions
+                            match task_ip_validator.validate_ip(addr.ip()) {
+                                Ok(_) => {
+                                    // Check port as a separate step for better logging
+                                    if let Err(e) = task_ip_validator.validate_port(addr.port()) {
+                                        warn!(
+                                            "Disallowing connection from TCP client {addr}: {e}"
+                                        );
+                                        continue;
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Disallowing connection from TCP client {addr}: {e}");
+                                    continue;
+                                }
+                            }
+                        } else {
+                            // Even with strict validation disabled, still perform basic validation
+
+                            // Validate client source port is >= 1024
+                            if addr.port() < 1024 {
+                                warn!(
+                                    "Disallowing connection from TCP client {addr} with reserved port {}, dropping connection",
+                                    addr.port()
+                                );
+                                continue;
+                            }
+
+                            // Check if client source address matches one of our listener addresses
+                            if all_socket_addrs
+                                .iter()
+                                .any(|listener_addr| listener_addr.ip() == addr.ip())
+                            {
+                                warn!(
+                                    "Disallowing connection from TCP client {addr} with source address matching one of our listener addresses, dropping connection"
+                                );
+                                continue;
+                            }
+                        }
 
                         // Check rate limit for TCP client if enabled
                         if let Some(rate_limiter) = &tcp_rate_limiter {

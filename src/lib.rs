@@ -8,6 +8,7 @@ pub mod dns_processor;
 pub mod doh;
 pub mod errors;
 pub mod hooks;
+pub mod ip_validator;
 pub mod load_balancer;
 pub mod metrics;
 pub mod nx_zones;

@@ -49,6 +49,7 @@ EtchDNS is a caching DNS proxy designed for security and reliability. It acts as
 
 ### 🔒 Security
 - **Domain Filtering**: Whitelist and blacklist support with allowed/NX zones
+- **IP Validation**: Block suspicious IP ranges and prevent address spoofing
 - **Rate Limiting**: Fine-grained control for each protocol (UDP/TCP/DoH)
 - **Transaction ID Masking**: Protection against cache poisoning attacks
 - **Privilege Dropping**: Run with minimal system access after initialization
@@ -110,11 +111,18 @@ Configure your devices to use EtchDNS as their DNS resolver. It will cache respo
 Create a protective layer for your network:
 
 ```toml
-# Blocklist configuration
+# Domain blocklist configuration
 nx_zones_file = "nx_zones.txt"
+
+# IP address validation and filtering
+enable_strict_ip_validation = true
+block_private_ips = true
+block_loopback_ips = true
+blocked_ip_ranges = ["203.0.113.0/24", "198.51.100.0/24"]
+min_client_port = 1024
 ```
 
-Block malicious domains, ads, or unwanted content by configuring the `nx_zones.txt` file with domains that should return NXDOMAIN responses.
+Block malicious domains, ads, or unwanted content by configuring the `nx_zones.txt` file with domains that should return NXDOMAIN responses. Additionally, use IP validation to block connections from suspicious or problematic IP ranges.
 
 EtchDNS can be used as an intermediary between a DNSCrypt server proxy (such as [encrypted-dns-server](https://github.com/DNSCrypt/encrypted-dns-server)) and your resolver to reduce load and enhance reliability.
 
@@ -169,6 +177,7 @@ Key configuration sections include:
 - **Rate limiting**: Parameters for each protocol
 - **Caching**: Cache size and TTL settings
 - **Domain filtering**: Allowed and blocked zones
+- **IP validation**: Client source IP filtering and security options
 - **EDNS-client-subnet**: Enable/disable and prefix length configuration
 - **Security**: Privilege dropping settings
 
@@ -295,8 +304,32 @@ EtchDNS includes several security features to protect both clients and upstream 
 
 - **Run with minimal privileges**: Use the privilege dropping feature
 - **Domain filtering**: Restrict which queries are processed
+- **IP validation**: Block connections from suspicious or problematic source addresses
 - **Rate limiting**: Prevent abuse by limiting queries per client
 - **Transaction ID masking**: Protect against cache poisoning attacks
+
+### IP Validation
+
+EtchDNS includes a robust IP validation system that allows you to control which client IP addresses can use your server:
+
+```toml
+# Enable strict IP validation
+enable_strict_ip_validation = true
+
+# Block private IP address ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+block_private_ips = true
+
+# Block loopback IP address ranges (127.0.0.0/8, ::1)
+block_loopback_ips = true
+
+# Minimum port to allow from clients (ports below this will be rejected)
+min_client_port = 1024
+
+# List of blocked IP ranges
+blocked_ip_ranges = ["203.0.113.0/24", "198.51.100.0/24"]
+```
+
+This helps protect against IP spoofing, abuse from internal networks, and connections from known problematic IP ranges.
 
 ## Development
 

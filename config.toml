@@ -253,6 +253,31 @@ ecs_prefix_v6 = 56
 # Security Configuration
 #------------------------------------------------------------------------------
 
+# Enable strict IP validation
+# If true, applies comprehensive validation to client IP addresses
+# This includes checking for private networks, loopback, etc.
+# Default: false
+enable_strict_ip_validation = false
+
+# Block private IP address ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+# Default: true
+block_private_ips = true
+
+# Block loopback IP address ranges (127.0.0.0/8, ::1)
+# Default: true
+block_loopback_ips = true
+
+# Minimum port to allow from clients (ports below this will be rejected)
+# Default: 1024 (privileged ports are below 1024)
+min_client_port = 1024
+
+# List of blocked IP ranges (in CIDR notation, e.g., "192.168.0.0/16")
+# Default: [] (empty list)
+blocked_ip_ranges = [
+    # Example: Block a specific range
+    # "203.0.113.0/24"   # TEST-NET-3 (Documentation)
+]
+
 # Username to drop privileges to after binding to sockets
 # If not set, privileges will not be dropped
 # Uncomment to enable privilege dropping
