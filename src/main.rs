@@ -1871,16 +1871,10 @@ async fn main() -> EtchDnsResult<()> {
         let slab = match Slab::with_capacity(max_udp_clients) {
             Ok(slab) => slab,
             Err(e) => {
-                error!(
-                    "Failed to create UDP clients slab with requested capacity: {}",
-                    e
-                );
+                error!("Failed to create UDP clients slab with requested capacity: {e}");
                 // Fall back to a smaller size if allocation fails
                 let smaller_capacity = std::cmp::max(100, max_udp_clients / 2);
-                warn!(
-                    "Falling back to smaller UDP client slab capacity: {}",
-                    smaller_capacity
-                );
+                warn!("Falling back to smaller UDP client slab capacity: {smaller_capacity}");
                 Slab::with_capacity(smaller_capacity)
                     .expect("Critical error: Failed to allocate even minimal UDP slab")
             }
@@ -1891,16 +1885,10 @@ async fn main() -> EtchDnsResult<()> {
         let slab = match Slab::with_capacity(max_tcp_clients) {
             Ok(slab) => slab,
             Err(e) => {
-                error!(
-                    "Failed to create TCP clients slab with requested capacity: {}",
-                    e
-                );
+                error!("Failed to create TCP clients slab with requested capacity: {e}");
                 // Fall back to a smaller size if allocation fails
                 let smaller_capacity = std::cmp::max(100, max_tcp_clients / 2);
-                warn!(
-                    "Falling back to smaller TCP client slab capacity: {}",
-                    smaller_capacity
-                );
+                warn!("Falling back to smaller TCP client slab capacity: {smaller_capacity}");
                 Slab::with_capacity(smaller_capacity)
                     .expect("Critical error: Failed to allocate even minimal TCP slab")
             }

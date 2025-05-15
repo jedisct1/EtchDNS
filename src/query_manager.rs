@@ -132,13 +132,10 @@ impl QueryManager {
                 let slab = match Slab::with_capacity(max_inflight_queries) {
                     Ok(slab) => slab,
                     Err(e) => {
-                        error!("Failed to create query slab with requested capacity: {}", e);
+                        error!("Failed to create query slab with requested capacity: {e}");
                         // Fall back to a smaller size if allocation fails
                         let smaller_capacity = std::cmp::max(100, max_inflight_queries / 2);
-                        warn!(
-                            "Falling back to smaller query slab capacity: {}",
-                            smaller_capacity
-                        );
+                        warn!("Falling back to smaller query slab capacity: {smaller_capacity}");
                         Slab::with_capacity(smaller_capacity)
                             .expect("Critical error: Failed to allocate even minimal query slab")
                     }
@@ -233,10 +230,7 @@ impl QueryManager {
         let client_ip = if let Some(ip) = client_addr.split(':').next() {
             ip
         } else {
-            warn!(
-                "Unable to parse client address: {}, using 'unknown'",
-                client_addr
-            );
+            warn!("Unable to parse client address: {client_addr}, using 'unknown'");
             "unknown"
         };
 
@@ -250,6 +244,7 @@ impl QueryManager {
     /// If the query is already in flight, this will add a new receiver to the existing query.
     /// If the query is not in flight, this will create a new task to handle the query.
     /// If the maximum number of in-flight queries has been reached, this will return an error.
+    #[allow(dead_code)]
     pub async fn submit_query(
         &self,
         key: DNSKey,
@@ -286,310 +281,182 @@ impl QueryManager {
         if let Some(stats) = &self.stats {
             stats.record_client_query().await;
         }
-        // Check if the query is of type ANY (255)
-        if key.qtype == crate::dns_parser::DNS_TYPE_ANY {
-            let log_msg = format!(
-                "Received query of type ANY for {}, returning NOTIMP",
-                key.name
-            );
 
-            let (_, receiver) = Self::create_and_send_response_with_flags(
-                &query_data,
-                crate::dns_processor::DNS_RCODE_NOTIMP,
-                self.authoritative_dns,
-                Some(&log_msg),
-            );
-
-            return Ok(receiver);
+        // Handle domain filtering (ANY query, nonexistent domains, allowed zones)
+        if let Some(filtered_response) = self.check_domain_filters(&key, &query_data).await {
+            return Ok(filtered_response);
         }
 
-        // Check if the query is for a nonexistent domain
-        if let Some(nx_zones) = &self.nx_zones {
-            if nx_zones.is_nonexistent(&key.name) {
-                log::debug!("Query for nonexistent domain: {}", key.name);
-
-                let log_msg = format!("Query for nonexistent domain: {}", key.name);
-                let (_, receiver) = Self::create_and_send_response_with_flags(
-                    &query_data,
-                    crate::dns_processor::DNS_RCODE_NXDOMAIN,
-                    self.authoritative_dns,
-                    Some(&log_msg),
-                );
-
-                return Ok(receiver);
-            }
-        }
-
-        // Check if the query is allowed based on the domain name
-        if let Some(allowed_zones) = &self.allowed_zones {
-            if !allowed_zones.is_allowed(&key.name) {
-                log::warn!("Query rejected: {} is not in allowed zones", key.name);
-
-                let log_msg = format!("Query rejected: {} is not in allowed zones", key.name);
-                let (_, receiver) = Self::create_and_send_response_with_flags(
-                    &query_data,
-                    crate::dns_processor::DNS_RCODE_REFUSED,
-                    self.authoritative_dns,
-                    Some(&log_msg),
-                );
-
-                return Ok(receiver);
-            }
-        }
-
-        // Call the hook_client_query_received hook if hooks are configured
-        if let Some(hooks) = &self.hooks {
-            let hook_result = hooks.hook_client_query_received(
-                &key.name,
-                key.qtype,
-                key.qclass,
-                client_ip,
-                &query_data,
-            );
-
-            // Handle different hook return codes
-            match hook_result {
-                0 => {
-                    // Continue normal processing
-                    log::debug!("Hook returned 0, continuing normal processing");
-                }
-                -1 => {
-                    // Return a minimal response with REFUSED rcode
-                    log::debug!("Hook returned -1, returning REFUSED response");
-
-                    let log_msg = format!("Query refused by hook: {}", key.name);
-                    let (_, receiver) = Self::create_and_send_response_with_flags(
-                        &query_data,
-                        crate::dns_processor::DNS_RCODE_REFUSED,
-                        self.authoritative_dns,
-                        Some(&log_msg),
-                    );
-
-                    return Ok(receiver);
-                }
-                _ => {
-                    // For other values, return an empty response with an error message
-                    log::debug!(
-                        "Hook returned unexpected value: {hook_result}, returning error response"
-                    );
-
-                    let (response_sender, receiver) = broadcast::channel(MAX_RECEIVERS);
-                    let response = DnsResponse {
-                        data: Vec::new(),
-                        error: Some(format!(
-                            "Query processing interrupted by hook (code: {hook_result})"
-                        )),
-                    };
-
-                    if let Err(e) = response_sender.send(response) {
-                        log::debug!("Failed to send hook-interrupted response: {e}");
-                    }
-
-                    return Ok(receiver);
-                }
-            }
+        // Process WebAssembly hooks
+        if let Some(hook_response) = self.process_hooks(&key, client_ip, &query_data).await {
+            return Ok(hook_response);
         }
 
         // Check if the response is in the cache
-        if let Some(cache) = &self.cache {
-            if let Some(cached_response) = cache.get(&key) {
-                // Check if the cached response has expired
-                if !cached_response.is_expired() {
-                    log::debug!("Cache hit for query: {}", key.name);
+        if let Some(cache_response) = self.check_cache(&key, &query_data).await {
+            return Ok(cache_response);
+        }
 
-                    // Record cache hit in stats
+        // Check in-flight queries and manage query limits
+        // Use if-let instead of match to simplify the control flow
+        if let Ok((mut in_flight_queries, mut query_slab)) =
+            self.manage_in_flight_queries(&key).await
+        {
+            // Create a new task to handle the query
+            let (task, receiver) = self
+                .create_query_task(key.clone(), query_data, resolver)
+                .await;
+
+            // Add the key to the front of the slab to track its age
+            match query_slab.push_front(key.clone()) {
+                Ok(slab_id) => {
+                    // Successfully added to slab, now add to the in-flight map
+                    let inflight_query = InflightQuery { task, slab_id };
+                    in_flight_queries.insert(key.clone(), inflight_query);
+
+                    // Increment the active in-flight queries counter
                     if let Some(stats) = &self.stats {
-                        stats.record_cache_hit().await;
+                        stats.increment_active_inflight_queries().await;
                     }
 
-                    // Create a response channel
-                    let (response_sender, receiver) = broadcast::channel(MAX_RECEIVERS);
-
-                    // Create a successful response from the cached data
-                    let mut response_data = cached_response.data.clone();
-
-                    // If not authoritative, adjust the TTL based on remaining time
-                    if !self.authoritative_dns {
-                        // Calculate remaining TTL in seconds
-                        let remaining_ttl = match cached_response
-                            .expires_at
-                            .duration_since(std::time::SystemTime::now())
-                        {
-                            Ok(remaining) => remaining.as_secs() as u32,
-                            Err(_) => 0, // If expiration is in the past, use 0
-                        };
-
-                        // Update the TTL in the response
-                        if let Err(e) =
-                            crate::dns_parser::change_ttl(&mut response_data, remaining_ttl)
-                        {
-                            log::debug!("Failed to update TTL in cached response: {e}");
-                        } else {
-                            log::debug!(
-                                "Adjusted TTL in cached response to {remaining_ttl} seconds"
-                            );
-                        }
-                    }
-
-                    // Set the appropriate DNS response flags
-                    crate::dns_processor::set_response_flags(
-                        &mut response_data,
-                        self.authoritative_dns,
-                    );
-
-                    let response = DnsResponse {
-                        data: response_data,
-                        error: None,
-                    };
-
-                    // Send the cached response
-                    if let Err(e) = response_sender.send(response) {
-                        log::debug!("Failed to send cached DNS response: {e}");
-                    }
-
-                    return Ok(receiver);
-                } else {
                     log::debug!(
-                        "Cache hit for query: {}, but response has expired",
-                        key.name
+                        "Added query to slab and in-flight map, slab size: {}, map size: {}",
+                        query_slab.len(),
+                        in_flight_queries.len()
                     );
-                    // Record cache miss in stats (expired entries count as misses)
-                    if let Some(stats) = &self.stats {
-                        stats.record_cache_miss().await;
-                    }
+
+                    Ok(receiver)
                 }
+                Err(e) => {
+                    log::error!("Failed to add query to slab: {e}");
+                    // Since we couldn't add to the slab, we won't add to the in-flight map either
+                    // This ensures they stay in sync
+                    Err(DnsError::Other(format!("Failed to add query to slab: {e}")).into())
+                }
+            }
+        } else if let Err(e) = self.manage_in_flight_queries(&key).await {
+            if let Some(receiver) = e.into_receiver() {
+                // Query is already in flight, return the receiver
+                Ok(receiver)
             } else {
-                log::debug!("Cache miss for query: {}", key.name);
-                // Record cache miss in stats
-                if let Some(stats) = &self.stats {
-                    stats.record_cache_miss().await;
-                }
+                // Some other error occurred
+                Err(DnsError::Other("Failed to manage in-flight queries".to_string()).into())
             }
+        } else {
+            // This branch should be unreachable as we've covered all the match arms above
+            Err(DnsError::Other(
+                "Unreachable code in submit_query_internal_with_client".to_string(),
+            )
+            .into())
         }
+    }
 
-        let mut in_flight_queries = self.in_flight_queries.lock().await;
+    /// Get the number of in-flight queries
+    #[allow(dead_code)]
+    pub async fn in_flight_count(&self) -> usize {
+        let in_flight_queries = self.in_flight_queries.lock().await;
+        in_flight_queries.len()
+    }
 
-        // Check if the query is already in flight
-        if let Some(inflight_query) = in_flight_queries.get(&key) {
-            // Query is already in flight, subscribe to the response
-            let receiver = inflight_query.task.response_sender.subscribe();
-            return Ok(receiver);
-        }
+    /// Get the server timeout in seconds
+    pub fn get_server_timeout(&self) -> u64 {
+        self.server_timeout
+    }
 
-        // Check if we've reached the maximum number of in-flight queries
-        let mut query_slab = self.query_slab.lock().await;
+    /// Get the maximum DNS packet size
+    pub fn get_dns_packet_len_max(&self) -> usize {
+        self.dns_packet_len_max
+    }
 
-        if in_flight_queries.len() >= self.max_inflight_queries {
-            log::warn!(
-                "Maximum number of in-flight queries ({}) reached, aborting oldest query",
-                self.max_inflight_queries
-            );
+    /// Get the load balancing strategy
+    pub fn get_load_balancing_strategy(&self) -> LoadBalancingStrategy {
+        self.load_balancing_strategy
+    }
 
-            // Find the oldest query to abort (the one at the back of the slab)
-            match query_slab.pop_back() {
-                Some(oldest_key) => {
-                    // Get the task from the map and remove it
-                    match in_flight_queries.remove(&oldest_key) {
-                        Some(inflight_query) => {
-                            // Abort the task
-                            inflight_query.task.task_handle.abort();
-
-                            // Create an empty response with error message
-                            let error_msg = "Query aborted due to maximum in-flight queries limit";
-                            let empty_response = DnsResponse {
-                                data: Vec::new(),
-                                error: Some(error_msg.to_string()),
-                            };
-
-                            // Ignore errors when sending - this can happen if all receivers have been dropped
-                            let _ = inflight_query.task.response_sender.send(empty_response);
-
-                            log::info!("Aborted and removed oldest in-flight query");
-                        }
-                        None => {
-                            // This should not happen if the map and slab are in sync
-                            log::error!(
-                                "Map and slab out of sync: key found in slab but not in map"
-                            );
-
-                            // Try to find any entry in the map to remove
-                            // First, get a key to remove
-                            let random_key_opt = in_flight_queries.keys().next().cloned();
-
-                            if let Some(random_key) = random_key_opt {
-                                // Get and remove the task
-                                if let Some(inflight_query) = in_flight_queries.remove(&random_key)
-                                {
-                                    // Abort the task
-                                    inflight_query.task.task_handle.abort();
-
-                                    // Create an empty response with error message
-                                    let error_msg =
-                                        "Query aborted due to maximum in-flight queries limit";
-                                    let empty_response = DnsResponse {
-                                        data: Vec::new(),
-                                        error: Some(error_msg.to_string()),
-                                    };
-
-                                    let _ =
-                                        inflight_query.task.response_sender.send(empty_response);
-
-                                    log::warn!(
-                                        "Aborted and removed a random query due to map/slab inconsistency"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                None => {
-                    // This should not happen if the map and slab are in sync
-                    log::error!("Map and slab out of sync: map has entries but slab is empty");
-
-                    // Try to find any entry in the map to remove
-                    // First, get a key to remove
-                    let random_key_opt = in_flight_queries.keys().next().cloned();
-
-                    if let Some(random_key) = random_key_opt {
-                        // Get and remove the task
-                        if let Some(inflight_query) = in_flight_queries.remove(&random_key) {
-                            // Abort the task
-                            inflight_query.task.task_handle.abort();
-
-                            // Create an empty response with error message
-                            let error_msg = "Query aborted due to maximum in-flight queries limit";
-                            let empty_response = DnsResponse {
-                                data: Vec::new(),
-                                error: Some(error_msg.to_string()),
-                            };
-
-                            let _ = inflight_query.task.response_sender.send(empty_response);
-
-                            log::warn!(
-                                "Aborted and removed a random query due to map/slab inconsistency"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        log::debug!("Query is not in flight, creating a new task to handle it");
-        // Query is not in flight, create a new task to handle it
+    /// Helper function to create a simple DNS response with flags and send it
+    fn create_and_send_response_with_flags(
+        query_data: &[u8],
+        rcode: u8,
+        authoritative_dns: bool,
+        log_msg: Option<&str>,
+    ) -> (
+        broadcast::Sender<DnsResponse>,
+        broadcast::Receiver<DnsResponse>,
+    ) {
+        // Create a response channel
         let (response_sender, receiver) = broadcast::channel(MAX_RECEIVERS);
 
-        // Clone the sender for the task
+        // Create the basic DNS response
+        let mut dns_response =
+            crate::dns_processor::create_dns_response(query_data, rcode, log_msg);
+
+        // Set the appropriate DNS response flags
+        crate::dns_processor::set_response_flags(&mut dns_response, authoritative_dns);
+
+        // Create the response object
+        let response = DnsResponse {
+            data: dns_response,
+            error: None,
+        };
+
+        // Send the response
+        if let Err(e) = response_sender.send(response) {
+            let rcode_name = match rcode {
+                crate::dns_processor::DNS_RCODE_NOTIMP => "NOTIMP",
+                crate::dns_processor::DNS_RCODE_NXDOMAIN => "NXDOMAIN",
+                crate::dns_processor::DNS_RCODE_REFUSED => "REFUSED",
+                _ => "unknown",
+            };
+            log::debug!("Failed to send {rcode_name} response: {e}");
+        }
+
+        (response_sender, receiver)
+    }
+
+    /// Helper function to create a response and broadcast it
+    #[allow(dead_code)]
+    fn create_and_broadcast_response(
+        data: Vec<u8>,
+        error: Option<String>,
+        sender: &broadcast::Sender<DnsResponse>,
+        log_prefix: &str,
+    ) -> DnsResponse {
+        let response = DnsResponse { data, error };
+
+        // Send the response to all receivers
+        if let Err(e) = sender.send(response.clone()) {
+            // This can happen if all receivers have been dropped
+            log::debug!("Failed to send {log_prefix} response: {e}");
+        }
+
+        response
+    }
+
+    /// Creates a new query task to handle a DNS query
+    /// Returns a tuple (QueryTask, receiver) for the task
+    async fn create_query_task(
+        &self,
+        key: DNSKey,
+        query_data: Vec<u8>,
+        resolver: impl Fn(Vec<u8>) -> futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> (QueryTask, broadcast::Receiver<DnsResponse>) {
+        log::debug!("Creating a new task to handle query for {}", key.name);
+
+        // Create a broadcast channel for communicating responses
+        let (response_sender, receiver) = broadcast::channel(MAX_RECEIVERS);
         let response_sender_clone = response_sender.clone();
 
-        // Clone the key for the task
+        // Clone necessery values for the task
         let key_clone = key.clone();
-
-        // Clone the Arcs for the task
         let in_flight_queries_arc = self.in_flight_queries.clone();
         let query_slab_arc = self.query_slab.clone();
-
-        // Create a new task to handle the query
         let server_timeout = self.server_timeout;
         let self_clone = self.clone();
+
+        // Create the task
         let task_handle = tokio::spawn(async move {
             // Create a timeout for the resolver
             let timeout_duration = std::time::Duration::from_secs(server_timeout);
@@ -804,121 +671,13 @@ impl QueryManager {
             response
         });
 
-        // Create a new QueryTask
+        // Create and return the QueryTask
         let task = QueryTask {
             task_handle,
             response_sender,
         };
 
-        // Add the key to the front of the slab to track its age
-        match query_slab.push_front(key.clone()) {
-            Ok(slab_id) => {
-                // Successfully added to slab, now add to the in-flight map
-                let inflight_query = InflightQuery { task, slab_id };
-
-                in_flight_queries.insert(key.clone(), inflight_query);
-
-                // Increment the active in-flight queries counter
-                if let Some(stats) = &self.stats {
-                    stats.increment_active_inflight_queries().await;
-                }
-
-                log::debug!(
-                    "Added query to slab and in-flight map, slab size: {}, map size: {}",
-                    query_slab.len(),
-                    in_flight_queries.len()
-                );
-            }
-            Err(e) => {
-                log::error!("Failed to add query to slab: {e}");
-                // Since we couldn't add to the slab, we won't add to the in-flight map either
-                // This ensures they stay in sync
-                return Err(DnsError::Other(format!("Failed to add query to slab: {e}")).into());
-            }
-        }
-
-        Ok(receiver)
-    }
-
-    /// Get the number of in-flight queries
-    #[allow(dead_code)]
-    pub async fn in_flight_count(&self) -> usize {
-        let in_flight_queries = self.in_flight_queries.lock().await;
-        in_flight_queries.len()
-    }
-
-    /// Get the server timeout in seconds
-    pub fn get_server_timeout(&self) -> u64 {
-        self.server_timeout
-    }
-
-    /// Get the maximum DNS packet size
-    pub fn get_dns_packet_len_max(&self) -> usize {
-        self.dns_packet_len_max
-    }
-
-    /// Get the load balancing strategy
-    pub fn get_load_balancing_strategy(&self) -> LoadBalancingStrategy {
-        self.load_balancing_strategy
-    }
-
-    /// Helper function to create a simple DNS response with flags and send it
-    fn create_and_send_response_with_flags(
-        query_data: &[u8],
-        rcode: u8,
-        authoritative_dns: bool,
-        log_msg: Option<&str>,
-    ) -> (
-        broadcast::Sender<DnsResponse>,
-        broadcast::Receiver<DnsResponse>,
-    ) {
-        // Create a response channel
-        let (response_sender, receiver) = broadcast::channel(MAX_RECEIVERS);
-
-        // Create the basic DNS response
-        let mut dns_response =
-            crate::dns_processor::create_dns_response(query_data, rcode, log_msg);
-
-        // Set the appropriate DNS response flags
-        crate::dns_processor::set_response_flags(&mut dns_response, authoritative_dns);
-
-        // Create the response object
-        let response = DnsResponse {
-            data: dns_response,
-            error: None,
-        };
-
-        // Send the response
-        if let Err(e) = response_sender.send(response) {
-            let rcode_name = match rcode {
-                crate::dns_processor::DNS_RCODE_NOTIMP => "NOTIMP",
-                crate::dns_processor::DNS_RCODE_NXDOMAIN => "NXDOMAIN",
-                crate::dns_processor::DNS_RCODE_REFUSED => "REFUSED",
-                _ => "unknown",
-            };
-            log::debug!("Failed to send {rcode_name} response: {e}");
-        }
-
-        (response_sender, receiver)
-    }
-
-    /// Helper function to create a response and broadcast it
-    #[allow(dead_code)]
-    fn create_and_broadcast_response(
-        data: Vec<u8>,
-        error: Option<String>,
-        sender: &broadcast::Sender<DnsResponse>,
-        log_prefix: &str,
-    ) -> DnsResponse {
-        let response = DnsResponse { data, error };
-
-        // Send the response to all receivers
-        if let Err(e) = sender.send(response.clone()) {
-            // This can happen if all receivers have been dropped
-            log::debug!("Failed to send {log_prefix} response: {e}");
-        }
-
-        response
+        (task, receiver)
     }
 
     /// Helper function to handle stale cache entries
@@ -980,6 +739,197 @@ impl QueryManager {
         response
     }
 
+    /// Manages in-flight queries and handles query limits
+    /// Returns Ok(locks) if a new query should be created, or Err with a receiver if the query is already in flight
+    async fn manage_in_flight_queries(
+        &self,
+        key: &DNSKey,
+    ) -> Result<
+        (
+            tokio::sync::MutexGuard<'_, HashMap<DNSKey, InflightQuery>>,
+            tokio::sync::MutexGuard<'_, Slab<DNSKey>>,
+        ),
+        DnsError,
+    > {
+        let mut in_flight_queries = self.in_flight_queries.lock().await;
+
+        // Check if the query is already in flight
+        if let Some(inflight_query) = in_flight_queries.get(key) {
+            // Query is already in flight, subscribe to the response
+            let receiver = inflight_query.task.response_sender.subscribe();
+            return Err(DnsError::AlreadyInFlight(receiver));
+        }
+
+        // Check if we've reached the maximum number of in-flight queries
+        let mut query_slab = self.query_slab.lock().await;
+
+        if in_flight_queries.len() >= self.max_inflight_queries {
+            log::warn!(
+                "Maximum number of in-flight queries ({}) reached, aborting oldest query",
+                self.max_inflight_queries
+            );
+
+            // Find the oldest query to abort (the one at the back of the slab)
+            match query_slab.pop_back() {
+                Some(oldest_key) => {
+                    // Get the task from the map and remove it
+                    match in_flight_queries.remove(&oldest_key) {
+                        Some(inflight_query) => {
+                            // Abort the task
+                            inflight_query.task.task_handle.abort();
+
+                            // Create an empty response with error message
+                            let error_msg = "Query aborted due to maximum in-flight queries limit";
+                            let empty_response = DnsResponse {
+                                data: Vec::new(),
+                                error: Some(error_msg.to_string()),
+                            };
+
+                            // Ignore errors when sending - this can happen if all receivers have been dropped
+                            let _ = inflight_query.task.response_sender.send(empty_response);
+
+                            log::info!("Aborted and removed oldest in-flight query");
+                        }
+                        None => {
+                            // This should not happen if the map and slab are in sync
+                            log::error!(
+                                "Map and slab out of sync: key found in slab but not in map"
+                            );
+
+                            // Try to find any entry in the map to remove
+                            self.remove_random_query(&mut in_flight_queries).await;
+                        }
+                    }
+                }
+                None => {
+                    // This should not happen if the map and slab are in sync
+                    log::error!("Map and slab out of sync: map has entries but slab is empty");
+
+                    // Try to find any entry in the map to remove
+                    self.remove_random_query(&mut in_flight_queries).await;
+                }
+            }
+        }
+
+        Ok((in_flight_queries, query_slab))
+    }
+
+    /// Removes a random query from the in-flight queries map when map/slab are out of sync
+    async fn remove_random_query(
+        &self,
+        in_flight_queries: &mut tokio::sync::MutexGuard<'_, HashMap<DNSKey, InflightQuery>>,
+    ) {
+        // First, get a key to remove
+        let random_key_opt = in_flight_queries.keys().next().cloned();
+
+        if let Some(random_key) = random_key_opt {
+            // Get and remove the task
+            if let Some(inflight_query) = in_flight_queries.remove(&random_key) {
+                // Abort the task
+                inflight_query.task.task_handle.abort();
+
+                // Create an empty response with error message
+                let error_msg = "Query aborted due to maximum in-flight queries limit";
+                let empty_response = DnsResponse {
+                    data: Vec::new(),
+                    error: Some(error_msg.to_string()),
+                };
+
+                let _ = inflight_query.task.response_sender.send(empty_response);
+
+                log::warn!("Aborted and removed a random query due to map/slab inconsistency");
+            }
+        }
+    }
+
+    /// Checks if a response for this query is in the cache
+    /// Returns Some(receiver) if a valid cache entry is found, None otherwise
+    async fn check_cache(
+        &self,
+        key: &DNSKey,
+        _query_data: &[u8],
+    ) -> Option<broadcast::Receiver<DnsResponse>> {
+        // Check if cache is enabled
+        if let Some(cache) = &self.cache {
+            if let Some(cached_response) = cache.get(key) {
+                // Check if the cached response has expired
+                if !cached_response.is_expired() {
+                    log::debug!("Cache hit for query: {}", key.name);
+
+                    // Record cache hit in stats
+                    if let Some(stats) = &self.stats {
+                        stats.record_cache_hit().await;
+                    }
+
+                    // Create a response channel
+                    let (response_sender, receiver) = broadcast::channel(MAX_RECEIVERS);
+
+                    // Create a successful response from the cached data
+                    let mut response_data = cached_response.data.clone();
+
+                    // If not authoritative, adjust the TTL based on remaining time
+                    if !self.authoritative_dns {
+                        // Calculate remaining TTL in seconds
+                        let remaining_ttl = match cached_response
+                            .expires_at
+                            .duration_since(std::time::SystemTime::now())
+                        {
+                            Ok(remaining) => remaining.as_secs() as u32,
+                            Err(_) => 0, // If expiration is in the past, use 0
+                        };
+
+                        // Update the TTL in the response
+                        if let Err(e) =
+                            crate::dns_parser::change_ttl(&mut response_data, remaining_ttl)
+                        {
+                            log::debug!("Failed to update TTL in cached response: {e}");
+                        } else {
+                            log::debug!(
+                                "Adjusted TTL in cached response to {remaining_ttl} seconds"
+                            );
+                        }
+                    }
+
+                    // Set the appropriate DNS response flags
+                    crate::dns_processor::set_response_flags(
+                        &mut response_data,
+                        self.authoritative_dns,
+                    );
+
+                    let response = DnsResponse {
+                        data: response_data,
+                        error: None,
+                    };
+
+                    // Send the cached response
+                    if let Err(e) = response_sender.send(response) {
+                        log::debug!("Failed to send cached DNS response: {e}");
+                    }
+
+                    return Some(receiver);
+                } else {
+                    log::debug!(
+                        "Cache hit for query: {}, but response has expired",
+                        key.name
+                    );
+                    // Record cache miss in stats (expired entries count as misses)
+                    if let Some(stats) = &self.stats {
+                        stats.record_cache_miss().await;
+                    }
+                }
+            } else {
+                log::debug!("Cache miss for query: {}", key.name);
+                // Record cache miss in stats
+                if let Some(stats) = &self.stats {
+                    stats.record_cache_miss().await;
+                }
+            }
+        }
+
+        // No valid cache entry found, continue normal processing
+        None
+    }
+
     /// Helper function to cache a DNS response
     fn cache_dns_response(
         &self,
@@ -1015,6 +965,130 @@ impl QueryManager {
         } else {
             log::debug!("Stored DNS response in cache with TTL: {ttl} seconds");
         }
+    }
+
+    /// Processes WebAssembly hooks for a query
+    /// Returns Some(receiver) if a hook interrupts normal processing, None if processing should continue
+    async fn process_hooks(
+        &self,
+        key: &DNSKey,
+        client_ip: &str,
+        query_data: &[u8],
+    ) -> Option<broadcast::Receiver<DnsResponse>> {
+        // Check if hooks are configured
+        if let Some(hooks) = &self.hooks {
+            let hook_result = hooks.hook_client_query_received(
+                &key.name, key.qtype, key.qclass, client_ip, query_data,
+            );
+
+            // Handle different hook return codes
+            match hook_result {
+                0 => {
+                    // Continue normal processing
+                    log::debug!("Hook returned 0, continuing normal processing");
+                    None
+                }
+                -1 => {
+                    // Return a minimal response with REFUSED rcode
+                    log::debug!("Hook returned -1, returning REFUSED response");
+
+                    let log_msg = format!("Query refused by hook: {}", key.name);
+                    let (_, receiver) = Self::create_and_send_response_with_flags(
+                        query_data,
+                        crate::dns_processor::DNS_RCODE_REFUSED,
+                        self.authoritative_dns,
+                        Some(&log_msg),
+                    );
+
+                    Some(receiver)
+                }
+                _ => {
+                    // For other values, return an empty response with an error message
+                    log::debug!(
+                        "Hook returned unexpected value: {hook_result}, returning error response"
+                    );
+
+                    let (response_sender, receiver) = broadcast::channel(MAX_RECEIVERS);
+                    let response = DnsResponse {
+                        data: Vec::new(),
+                        error: Some(format!(
+                            "Query processing interrupted by hook (code: {hook_result})"
+                        )),
+                    };
+
+                    if let Err(e) = response_sender.send(response) {
+                        log::debug!("Failed to send hook-interrupted response: {e}");
+                    }
+
+                    Some(receiver)
+                }
+            }
+        } else {
+            // No hooks configured, continue normal processing
+            None
+        }
+    }
+
+    /// Checks if a query should be filtered based on domain restrictions
+    /// Returns Some(receiver) if the query should be filtered, None if processing should continue
+    async fn check_domain_filters(
+        &self,
+        key: &DNSKey,
+        query_data: &[u8],
+    ) -> Option<broadcast::Receiver<DnsResponse>> {
+        // Check if the query is of type ANY (255)
+        if key.qtype == crate::dns_parser::DNS_TYPE_ANY {
+            let log_msg = format!(
+                "Received query of type ANY for {}, returning NOTIMP",
+                key.name
+            );
+
+            let (_, receiver) = Self::create_and_send_response_with_flags(
+                query_data,
+                crate::dns_processor::DNS_RCODE_NOTIMP,
+                self.authoritative_dns,
+                Some(&log_msg),
+            );
+
+            return Some(receiver);
+        }
+
+        // Check if the query is for a nonexistent domain
+        if let Some(nx_zones) = &self.nx_zones {
+            if nx_zones.is_nonexistent(&key.name) {
+                log::debug!("Query for nonexistent domain: {}", key.name);
+
+                let log_msg = format!("Query for nonexistent domain: {}", key.name);
+                let (_, receiver) = Self::create_and_send_response_with_flags(
+                    query_data,
+                    crate::dns_processor::DNS_RCODE_NXDOMAIN,
+                    self.authoritative_dns,
+                    Some(&log_msg),
+                );
+
+                return Some(receiver);
+            }
+        }
+
+        // Check if the query is allowed based on the domain name
+        if let Some(allowed_zones) = &self.allowed_zones {
+            if !allowed_zones.is_allowed(&key.name) {
+                log::warn!("Query rejected: {} is not in allowed zones", key.name);
+
+                let log_msg = format!("Query rejected: {} is not in allowed zones", key.name);
+                let (_, receiver) = Self::create_and_send_response_with_flags(
+                    query_data,
+                    crate::dns_processor::DNS_RCODE_REFUSED,
+                    self.authoritative_dns,
+                    Some(&log_msg),
+                );
+
+                return Some(receiver);
+            }
+        }
+
+        // Query passed all filters, continue processing
+        None
     }
 
     /// Helper function to remove a query from the in-flight map and slab

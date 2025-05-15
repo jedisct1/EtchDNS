@@ -10,21 +10,7 @@ use crate::stats::SharedStats;
 use std::sync::Arc;
 
 /// Creates a resolver function for DNS queries
-///
-/// This function creates a resolver function that can be used to resolve DNS queries.
-/// It encapsulates the common logic for creating a resolver function across different client types.
-///
-/// # Arguments
-///
-/// * `upstream_servers` - The upstream DNS servers to forward queries to
-/// * `server_timeout` - The timeout for upstream server connections in seconds
-/// * `dns_packet_len_max` - The maximum DNS packet size
-/// * `stats` - The global statistics tracker
-/// * `load_balancing_strategy` - The load balancing strategy to use
-///
-/// # Returns
-///
-/// A function that takes a DNS query and returns a future that resolves to a DNS response
+#[allow(dead_code)]
 pub fn create_resolver(
     upstream_servers: Vec<String>,
     server_timeout: u64,

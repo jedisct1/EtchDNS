@@ -75,11 +75,11 @@ EtchDNS is a caching DNS proxy designed for security and reliability. It acts as
 ## Quickstart
 
 1. Download or clone the repository
-2. Edit a copy of the [`config.toml`](config.toml) configuration file
+2. Edit a copy of the [`etchdns.toml`](etchdns.toml) configuration file
 3. Run EtchDNS:
 
 ```sh
-etchdns -c /path/to/config.toml
+etchdns -c /path/to/etchdns.toml
 ```
 
 ## Use Cases
@@ -167,7 +167,7 @@ Note that enabling the hooks feature includes a WebAssembly runtime which signif
 
 ## Configuration
 
-EtchDNS uses a TOML configuration file to control all aspects of its behavior. A complete example with documentation can be found in the included [`config.toml`](config.toml) file.
+EtchDNS uses a TOML configuration file to control all aspects of its behavior. A complete example with documentation can be found in the included [`etchdns.toml`](etchdns.toml) file.
 
 Key configuration sections include:
 

@@ -1,0 +1,294 @@
+# EtchDNS Configuration File
+
+#------------------------------------------------------------------------------
+# Basic Server Configuration
+#------------------------------------------------------------------------------
+
+# Log level (trace, debug, info, warn, error, default: warn)
+log_level = "info"
+
+# Addresses to listen on (array of "ip:port" strings, default: ["0.0.0.0:10000"])
+# Standard DNS port is 53, but requires root privileges
+listen_addresses = ["0.0.0.0:53"]
+
+# Addresses to listen on for DNS-over-HTTPS (DoH) (array of "ip:port" strings, default: [])
+# If empty, DoH is disabled
+# Uncomment to enable DoH on port 443 (requires root privileges)
+# doh_listen_addresses = ["0.0.0.0:443"]
+
+# Maximum DNS packet size in bytes (must be between 512 and 65536, default: 4096)
+# 4096 is a reasonable size that accommodates DNSSEC and other extensions
+dns_packet_len_max = 4096
+
+#------------------------------------------------------------------------------
+# Upstream DNS Configuration
+#------------------------------------------------------------------------------
+
+# Upstream DNS servers to forward queries to (array of "ip:port" strings, default: ["8.8.8.8:53", "8.8.4.4:53"])
+# Using a mix of providers for better reliability
+upstream_servers = [
+    "8.8.8.8:53",     # Google DNS
+    "8.8.4.4:53",     # Google DNS (secondary)
+    "1.1.1.1:53",     # Cloudflare DNS
+    "9.9.9.9:53"      # Quad9 DNS
+]
+
+# Load balancing strategy (random, fastest, p2) (default: fastest)
+# "fastest" provides the best performance by selecting the server with lowest latency
+load_balancing_strategy = "p2"
+
+# Maximum time (in seconds) to wait for a response from an upstream server (default: 5)
+# 3 seconds is a good balance between responsiveness and reliability
+server_timeout = 3
+
+# Interval between DNS server probes in seconds (0 to disable, default: 60)
+# 60 seconds is a good balance between accuracy and overhead
+probe_interval = 60
+
+#------------------------------------------------------------------------------
+# Concurrency and Connection Limits
+#------------------------------------------------------------------------------
+
+# Maximum number of UDP clients to to allow concurrently (default: 1000)
+# Increase for higher concurrency
+max_udp_clients = 1000
+
+# Maximum number of TCP clients to allow concurrently (default: 1000)
+# Increase for higher concurrency
+max_tcp_clients = 1000
+
+# Maximum number of concurrent connections to the DoH server (default: 10)
+# Increase for higher concurrency
+max_doh_connections = 1000
+
+# Maximum number of simultaneous in-flight queries (default: 500)
+# Increase for higher concurrency
+max_inflight_queries = 500
+
+#------------------------------------------------------------------------------
+# Caching Configuration
+#------------------------------------------------------------------------------
+
+# Size of the DNS cache in number of entries (default: 10000)
+# Increase for better performance with high query volumes
+cache_size = 100000
+
+# Whether this server is authoritative for DNS responses (default: false)
+# If false, TTLs in cached responses will be adjusted based on remaining time
+authoritative_dns = false
+
+# Grace period in seconds to serve stale (expired) cache entries when upstream servers fail (default: 0)
+# Set to 0 to disable serving stale entries
+# 86400 seconds (1 day) allows continued operation during upstream outages
+serve_stale_grace_time = 86400
+
+# TTL in seconds to use when serving stale cache entries (default: 30)
+# 60 seconds is a reasonable TTL for stale entries
+serve_stale_ttl = 60
+
+# TTL in seconds to use for negative DNS responses when no TTL is available (default: 1)
+# 60 seconds is a reasonable TTL for negative responses
+negative_cache_ttl = 60
+
+# Minimum TTL in seconds for cached DNS responses (default: 1)
+# This is the minimum time a valid response will be stored in the cache
+# Applied in both authoritative and non-authoritative modes
+# In authoritative mode, original TTLs are still returned to clients
+min_cache_ttl = 1
+
+#------------------------------------------------------------------------------
+# Domain Filtering
+#------------------------------------------------------------------------------
+
+# Path to a file containing allowed zones (default: none)
+# If set, only queries for domains in this file will be processed
+# Uncomment to enable domain filtering
+# allowed_zones_file = "allowed_zones.txt"
+
+# Path to a file containing nonexistent zones (default: none)
+# If set, queries for domains in this file will return NXDOMAIN directly
+# Uncomment to enable blocking of known bad domains
+# nx_zones_file = "nx_zones.txt"
+
+#------------------------------------------------------------------------------
+# Rate Limiting
+#------------------------------------------------------------------------------
+
+# UDP Rate Limiting
+# Time window in seconds for UDP rate limiting (default: 1)
+# Set to 0 to disable rate limiting for UDP
+# 1 second is appropriate for UDP due to its stateless nature
+udp_rate_limit_window = 1
+
+# Maximum number of queries allowed per client IP in the UDP window (default: 100)
+# 500 queries per second is reasonable for legitimate clients
+udp_rate_limit_count = 500
+
+# Maximum number of client IPs to track for UDP rate limiting (default: 10000)
+# 100000 allows tracking more clients in high-traffic environments
+udp_rate_limit_max_clients = 100000
+
+# TCP Rate Limiting
+# Time window in seconds for TCP rate limiting (default: 5)
+# Set to 0 to disable rate limiting for TCP
+# 5 seconds is appropriate for TCP due to its connection-oriented nature
+tcp_rate_limit_window = 5
+
+# Maximum number of queries allowed per client IP in the TCP window (default: 20)
+# 100 queries per 5 seconds is reasonable for legitimate clients
+tcp_rate_limit_count = 100
+
+# Maximum number of client IPs to track for TCP rate limiting (default: 5000)
+# 50000 allows tracking more clients in high-traffic environments
+tcp_rate_limit_max_clients = 50000
+
+# DoH Rate Limiting
+# Time window in seconds for DoH rate limiting (default: 10)
+# Set to 0 to disable rate limiting for DoH
+# 10 seconds is appropriate for DoH due to its connection-oriented nature
+doh_rate_limit_window = 10
+
+# Maximum number of queries allowed per client IP in the DoH window (default: 30)
+# 200 queries per 10 seconds is reasonable for legitimate clients
+doh_rate_limit_count = 200
+
+# Maximum number of client IPs to track for DoH rate limiting (default: 5000)
+# 50000 allows tracking more clients in high-traffic environments
+doh_rate_limit_max_clients = 50000
+
+#------------------------------------------------------------------------------
+# Metrics Configuration
+#------------------------------------------------------------------------------
+
+# Optional address for the HTTP metrics server (ip:port)
+# If not specified, the metrics server will not be started
+# Bind to localhost for security
+metrics_address = "127.0.0.1:9100"
+
+# URL path for the metrics endpoint (default: "/metrics")
+metrics_path = "/metrics"
+
+# Maximum number of concurrent connections to the HTTP metrics server (default: 5)
+# Increase for better handling of metric scraping
+max_metrics_connections = 20
+
+#------------------------------------------------------------------------------
+# Control API Configuration
+#------------------------------------------------------------------------------
+
+# Addresses to listen on for the HTTP control server (array of "ip:port" strings)
+# If empty, the control server is disabled
+# Bind to localhost for security
+control_listen_addresses = ["127.0.0.1:8080"]
+
+# Base path for the control API endpoints (default: "/control")
+control_path = "/control"
+
+# Maximum number of concurrent connections to the HTTP control server (default: 5)
+max_control_connections = 10
+
+# Available endpoints:
+# - GET /control/status: Server status
+# - GET /control/cache: Get cache status information
+# - DELETE /control/cache: Clear entire cache
+# - DELETE /control/cache/zone/<example.com>: Clear entries for a specific zone
+# - DELETE /control/cache/name/<example.com>: Clear a specific entry
+
+#------------------------------------------------------------------------------
+# Logging Configuration
+#------------------------------------------------------------------------------
+
+# Path to a file to log DNS queries to
+# If not set, query logging is disabled
+# Uncomment to enable query logging
+# query_log_file = "queries.log"
+
+# Whether to include timestamp in query log (default: true)
+query_log_include_timestamp = true
+
+# Whether to include client address in query log (default: true)
+query_log_include_client_addr = true
+
+# Whether to include query type in query log (default: true)
+query_log_include_query_type = true
+
+# Whether to include query class in query log (default: false)
+query_log_include_query_class = false
+
+#------------------------------------------------------------------------------
+# Extensions
+#------------------------------------------------------------------------------
+
+# Path to a WebAssembly file containing hook implementations
+# If set, the hooks will be loaded from this file
+# Uncomment to enable WebAssembly hooks
+# hooks_wasm_file = "hooks.wasm"
+
+# Enable WASI support for WebAssembly hooks
+# If true, the WebAssembly module will have access to WASI system calls
+# This is required for WebAssembly modules that use file system, environment variables, etc.
+# Default: false
+# hooks_wasm_wasi = false
+
+#------------------------------------------------------------------------------
+# EDNS-Client-Subnet Configuration
+#------------------------------------------------------------------------------
+
+# Enable EDNS-client-subnet support (default: false)
+# If true, client IP information will be included in upstream queries
+# This can improve CDN and geolocation-based DNS responses
+enable_ecs = false
+
+# IPv4 prefix length to use for EDNS-client-subnet (default: 24)
+# This controls how much of the client's IPv4 address is sent to upstream servers
+# Recommended value: 24 (send first 24 bits, hiding the last 8 bits)
+ecs_prefix_v4 = 24
+
+# IPv6 prefix length to use for EDNS-client-subnet (default: 56)
+# This controls how much of the client's IPv6 address is sent to upstream servers
+# Recommended value: 56 (send first 56 bits, hiding the last 72 bits)
+ecs_prefix_v6 = 56
+
+#------------------------------------------------------------------------------
+# Security Configuration
+#------------------------------------------------------------------------------
+
+# Enable strict IP validation
+# If true, applies comprehensive validation to client IP addresses
+# This includes checking for private networks, loopback, etc.
+# Default: false
+enable_strict_ip_validation = false
+
+# Block private IP address ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+# Default: true
+block_private_ips = false
+
+# Block loopback IP address ranges (127.0.0.0/8, ::1)
+# Default: true
+block_loopback_ips = false
+
+# Minimum port to allow from clients (ports below this will be rejected)
+# Default: 1024 (privileged ports are below 1024)
+min_client_port = 1024
+
+# List of blocked IP ranges (in CIDR notation, e.g., "192.168.0.0/16")
+# Default: [] (empty list)
+blocked_ip_ranges = [
+    # Example: Block a specific range
+    # "203.0.113.0/24"   # TEST-NET-3 (Documentation)
+]
+
+# Username to drop privileges to after binding to sockets
+# If not set, privileges will not be dropped
+# Uncomment to enable privilege dropping
+# user = "nobody"
+
+# Group to drop privileges to after binding to sockets
+# If not set, the primary group of the user will be used
+# Uncomment to enable privilege dropping to a specific group
+# group = "nogroup"
+
+# Directory to chroot to after binding to sockets
+# If not set, chroot will not be performed
+# Uncomment to enable chroot (ensure the directory exists and is properly set up)
+# chroot = "/var/empty"

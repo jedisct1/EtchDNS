@@ -37,16 +37,10 @@ pub fn create_dns_cache(capacity: usize) -> SyncDnsCache {
     match SyncSieveCache::<DNSKey, CachedResponse>::new(capacity) {
         Ok(cache) => cache,
         Err(e) => {
-            error!(
-                "Failed to create DNS cache with requested capacity {}: {}",
-                capacity, e
-            );
+            error!("Failed to create DNS cache with requested capacity {capacity}: {e}");
             // Fall back to a smaller size if allocation fails
             let smaller_capacity = std::cmp::max(100, capacity / 2);
-            warn!(
-                "Falling back to smaller DNS cache capacity: {}",
-                smaller_capacity
-            );
+            warn!("Falling back to smaller DNS cache capacity: {smaller_capacity}");
 
             // Try with smaller capacity, if that fails we have a serious problem
             SyncSieveCache::<DNSKey, CachedResponse>::new(smaller_capacity)
