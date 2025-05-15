@@ -11,6 +11,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
 use crate::cache::SyncDnsCache;
+use crate::stats::SharedStats;
 
 /// Response structure for API calls
 #[derive(Serialize, Deserialize)]
@@ -54,6 +55,7 @@ async fn handle_request(
     req: Request<hyper::body::Incoming>,
     control_path: String,
     dns_cache: Option<Arc<SyncDnsCache>>,
+    stats: Option<Arc<SharedStats>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
     let method = req.method();
@@ -100,14 +102,28 @@ async fn handle_request(
                 let capacity = cache.capacity();
 
                 // Get cache hit/miss statistics from the stats system
-                // These would need to be passed in from the main application
-                // For now, we'll just use placeholder values
-                let hits = 0;
-                let misses = 0;
-                let hit_rate = if hits + misses > 0 {
-                    hits as f64 / (hits + misses) as f64
+                let (hits, misses, hit_rate) = if let Some(stats_ref) = &stats {
+                    // Get the current stats
+                    let global_stats = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(async { stats_ref.get_stats().await })
+                    });
+
+                    let hits = global_stats.cache_hits;
+                    let misses = global_stats.cache_misses;
+                    let hit_rate = if hits + misses > 0 {
+                        hits as f64 / (hits + misses) as f64
+                    } else {
+                        0.0
+                    };
+
+                    (hits, misses, hit_rate)
                 } else {
-                    0.0
+                    // Fallback to placeholder values if stats not available
+                    let hits = 0;
+                    let misses = 0;
+                    let hit_rate = 0.0;
+                    (hits, misses, hit_rate)
                 };
 
                 let response = CacheStatusResponse {
@@ -370,6 +386,7 @@ pub async fn start_control_server(
     control_path: String,
     max_connections: usize,
     dns_cache: Option<Arc<SyncDnsCache>>,
+    stats: Option<Arc<SharedStats>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a TCP listener
     let listener = TcpListener::bind(addr).await?;
@@ -396,6 +413,7 @@ pub async fn start_control_server(
         let control_path = control_path.clone();
         let semaphore = semaphore.clone();
         let dns_cache = dns_cache.clone();
+        let stats = stats.clone();
 
         // Spawn a task to handle the connection
         tokio::spawn(async move {
@@ -415,7 +433,8 @@ pub async fn start_control_server(
             let service = hyper::service::service_fn(move |req| {
                 let control_path = control_path.clone();
                 let dns_cache = dns_cache.clone();
-                async move { handle_request(req, control_path, dns_cache).await }
+                let stats = stats.clone();
+                async move { handle_request(req, control_path, dns_cache, stats).await }
             });
 
             // Process the connection

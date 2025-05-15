@@ -2194,6 +2194,7 @@ async fn main() -> EtchDnsResult<()> {
             let control_path = config.control_path.clone();
             let max_connections = config.max_control_connections;
             let dns_cache = Some(dns_cache.clone());
+            let stats = Some(global_stats.clone());
 
             // Create a task for the control server
             let control_task = tokio::spawn(async move {
@@ -2204,6 +2205,7 @@ async fn main() -> EtchDnsResult<()> {
                     control_path,
                     max_connections,
                     dns_cache,
+                    stats,
                 )
                 .await
                 {
