@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,11 +23,27 @@ pub struct RateLimiter {
     state: Arc<Mutex<RateLimiterState>>,
 }
 
+/// Client activity information used for rate limiting
+#[derive(Debug, Clone)]
+struct ClientActivity {
+    /// The query timestamps within the window
+    timestamps: Vec<Instant>,
+
+    /// Last query time (used for LRU eviction)
+    last_active: Instant,
+
+    /// Total query count (used for eviction heuristics)
+    total_queries: u64,
+}
+
 /// Internal state of the rate limiter
 #[derive(Debug)]
 struct RateLimiterState {
-    /// Map of client IP addresses to their query counts and timestamps
-    clients: HashMap<IpAddr, Vec<Instant>>,
+    /// Map of client IP addresses to their activity information
+    clients: HashMap<IpAddr, ClientActivity>,
+
+    /// Queue for tracking client access order (for LRU eviction)
+    access_order: VecDeque<IpAddr>,
 
     /// Last cleanup time
     last_cleanup: Instant,
@@ -47,7 +63,8 @@ impl RateLimiter {
             max_queries,
             max_clients,
             state: Arc::new(Mutex::new(RateLimiterState {
-                clients: HashMap::new(),
+                clients: HashMap::with_capacity(max_clients),
+                access_order: VecDeque::with_capacity(max_clients),
                 last_cleanup: Instant::now(),
             })),
         }
@@ -75,24 +92,52 @@ impl RateLimiter {
         let client_exists = state.clients.contains_key(&client_ip);
 
         // If the client is not already being tracked and the HashMap is full,
-        // remove the first entry that is different from the one we want to insert
+        // evict a client using our enhanced eviction policy
         if !client_exists && state.clients.len() >= self.max_clients && !state.clients.is_empty() {
-            self.remove_first_entry(&mut state, client_ip);
+            self.evict_client(&mut state);
         }
 
-        // Get the client's query timestamps
-        let timestamps = state.clients.entry(client_ip).or_insert_with(Vec::new);
+        // First update the access order
+        if state.clients.contains_key(&client_ip) {
+            // Update client's position in access order (for LRU)
+            if let Some(pos) = state.access_order.iter().position(|ip| ip == &client_ip) {
+                state.access_order.remove(pos);
+            }
+        }
+        state.access_order.push_back(client_ip);
+
+        // Get or create the client's activity record
+        let activity = if let Some(activity) = state.clients.get_mut(&client_ip) {
+            // Update existing client's activity record
+            activity.last_active = now;
+            activity.total_queries += 1;
+            activity
+        } else {
+            // Create new client activity record
+            let activity = ClientActivity {
+                timestamps: Vec::new(),
+                last_active: now,
+                total_queries: 1,
+            };
+
+            // Add to clients map
+            state.clients.insert(client_ip, activity.clone());
+
+            state.clients.get_mut(&client_ip).unwrap()
+        };
 
         // Remove timestamps that are outside the window
         let window_start = now - Duration::from_secs(self.window);
-        timestamps.retain(|&timestamp| timestamp >= window_start);
+        activity
+            .timestamps
+            .retain(|&timestamp| timestamp >= window_start);
 
         // Check if the client has exceeded the rate limit
-        if timestamps.len() >= self.max_queries as usize {
+        if activity.timestamps.len() >= self.max_queries as usize {
             log::warn!(
                 "Rate limit exceeded for client {}: {} queries in {} seconds (limit: {})",
                 client_ip,
-                timestamps.len(),
+                activity.timestamps.len(),
                 self.window,
                 self.max_queries
             );
@@ -100,18 +145,50 @@ impl RateLimiter {
         }
 
         // Add the current timestamp
-        timestamps.push(now);
+        activity.timestamps.push(now);
 
         true
     }
 
-    /// Remove the first entry from the HashMap that is different from the specified client IP
-    fn remove_first_entry(&self, state: &mut RateLimiterState, client_ip: IpAddr) {
-        // Find the first key that is different from the one we want to insert
-        if let Some(first_key) = state.clients.keys().find(|&&k| k != client_ip).cloned() {
-            // Remove the first entry
-            state.clients.remove(&first_key);
-            log::debug!("Removed client {first_key} from rate limiter due to capacity limit");
+    /// Evict a client using a combined policy considering:
+    /// 1. Least Recently Used (LRU) clients
+    /// 2. Clients with fewer queries (avoid removing heavy users)
+    /// 3. Clients with the oldest activity
+    fn evict_client(&self, state: &mut RateLimiterState) {
+        if state.access_order.is_empty() {
+            return;
+        }
+
+        // First attempt: Find low-activity clients from the least recently used third
+        let lru_subset_size = (state.access_order.len() / 3).max(1);
+        let lru_candidates: Vec<IpAddr> = state
+            .access_order
+            .iter()
+            .take(lru_subset_size)
+            .cloned()
+            .collect();
+
+        // Find client with lowest activity from LRU subset
+        if let Some(client_to_evict) = lru_candidates
+            .iter()
+            .min_by_key(|ip| state.clients.get(ip).map_or(u64::MAX, |a| a.total_queries))
+        {
+            let client_ip = *client_to_evict;
+            state.clients.remove(&client_ip);
+
+            // Remove from access order
+            if let Some(pos) = state.access_order.iter().position(|ip| ip == &client_ip) {
+                state.access_order.remove(pos);
+            }
+
+            log::debug!("Evicted client {client_ip} from rate limiter (low activity, LRU)");
+            return;
+        }
+
+        // Fallback: If the above logic fails, simply use LRU
+        if let Some(client_ip) = state.access_order.pop_front() {
+            state.clients.remove(&client_ip);
+            log::debug!("Evicted client {client_ip} from rate limiter (LRU fallback)");
         }
     }
 
@@ -121,19 +198,88 @@ impl RateLimiter {
     /// removes clients that have no timestamps.
     fn cleanup(&self, state: &mut RateLimiterState, now: Instant) {
         let window_start = now - Duration::from_secs(self.window);
+        let mut clients_to_remove = Vec::new();
 
-        // Remove timestamps that are outside the window and clients with no timestamps
-        state.clients.retain(|_, timestamps| {
-            timestamps.retain(|&timestamp| timestamp >= window_start);
-            !timestamps.is_empty()
-        });
+        // Remove timestamps that are outside the window
+        for (client_ip, activity) in state.clients.iter_mut() {
+            activity
+                .timestamps
+                .retain(|&timestamp| timestamp >= window_start);
+
+            // Mark clients with no timestamps for removal
+            if activity.timestamps.is_empty() {
+                clients_to_remove.push(*client_ip);
+            }
+        }
+
+        // Remove clients with no timestamps
+        for client_ip in &clients_to_remove {
+            state.clients.remove(client_ip);
+
+            // Remove from access order
+            if let Some(pos) = state.access_order.iter().position(|ip| ip == client_ip) {
+                state.access_order.remove(pos);
+            }
+        }
 
         // Update the last cleanup time
         state.last_cleanup = now;
 
         log::debug!(
-            "Rate limiter cleanup completed, tracking {} clients",
+            "Rate limiter cleanup completed: removed {} inactive clients, tracking {} clients",
+            clients_to_remove.len(),
             state.clients.len()
         );
     }
+
+    /// Get statistics about current rate limiter state
+    ///
+    /// This is useful for diagnostics and monitoring
+    pub async fn get_stats(&self) -> RateLimiterStats {
+        let state = self.state.lock().await;
+
+        let now = Instant::now();
+        let window_start = now - Duration::from_secs(self.window);
+
+        let mut active_client_count = 0;
+        let mut max_query_count = 0;
+        let mut total_queries = 0;
+
+        for activity in state.clients.values() {
+            let recent_queries = activity
+                .timestamps
+                .iter()
+                .filter(|&&timestamp| timestamp >= window_start)
+                .count();
+
+            if recent_queries > 0 {
+                active_client_count += 1;
+                max_query_count = max_query_count.max(recent_queries);
+                total_queries += recent_queries;
+            }
+        }
+
+        RateLimiterStats {
+            total_tracked_clients: state.clients.len(),
+            active_clients: active_client_count,
+            max_queries_per_client: max_query_count,
+            total_recent_queries: total_queries,
+        }
+    }
+}
+
+/// Statistics about the current state of the rate limiter
+#[derive(Debug, Clone)]
+pub struct RateLimiterStats {
+    /// Total number of clients being tracked
+    pub total_tracked_clients: usize,
+
+    /// Number of clients with recent activity
+    pub active_clients: usize,
+
+    /// Maximum number of queries for any single client
+    pub max_queries_per_client: usize,
+
+    /// Total number of queries within the window
+    pub total_recent_queries: usize,
 }
