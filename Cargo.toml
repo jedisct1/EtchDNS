@@ -2,6 +2,22 @@
 name = "etchdns"
 version = "0.1.0"
 edition = "2024"
+description = "A caching DNS proxy with advanced security features, WebAssembly hooks, and comprehensive protection mechanisms"
+authors = ["Frank Denis"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/jedisct1/etchdns"
+homepage = "https://github.com/jedisct1/etchdns"
+documentation = "https://github.com/jedisct1/etchdns"
+keywords = ["dns", "caching", "proxy", "security", "webassembly"]
+categories = ["network-programming", "caching", "web-programming"]
+exclude = [
+    "fuzz/corpus/*",
+    "fuzz/artifacts/*",
+    ".DS_Store",
+    ".zig-cache",
+    "www",
+]
 
 [lib]
 name = "etchdns"
