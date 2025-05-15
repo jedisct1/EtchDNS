@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use clap::Parser;
 use log::{debug, error, info, warn};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use slabigator::Slab;
 use std::fs;
@@ -838,12 +839,8 @@ impl ClientQuery {
             }
         }
 
-        // Generate a random transaction ID using a simpler approach
-        let random_tid: u16 = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u16)
-            ^ 0xABCD; // XOR with a constant for better randomness
+        // Generate a random transaction ID
+        let random_tid: u16 = rand::rng().random();
 
         // Store the original transaction ID for verification later
         let original_tid = dns_parser::tid(&query_data);

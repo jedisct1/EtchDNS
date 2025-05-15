@@ -184,7 +184,7 @@ impl ServerProber {
         ];
 
         // Generate a random transaction ID
-        let tid: u16 = rand::rng().random_range(0..65535);
+        let tid: u16 = rand::rng().random();
         query[0] = (tid >> 8) as u8;
         query[1] = tid as u8;
 
