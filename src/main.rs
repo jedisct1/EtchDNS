@@ -47,7 +47,7 @@ extern crate bpf;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
-#[command(author, version, about = "A simple DNS echo server")]
+#[command(author, version, about = "An efficient caching DNS proxy")]
 struct Args {
     /// Path to the configuration file
     #[arg(short, long, value_name = "FILE")]
