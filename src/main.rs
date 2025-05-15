@@ -1346,7 +1346,7 @@ async fn process_tcp_connection(
     addr: SocketAddr,
     upstream_servers: Vec<String>,
     query_manager: Arc<QueryManager>,
-    tcp_clients_slab: Arc<Mutex<Slab<TCPClient>>>,
+    tcp_clients_slab: Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>,
     dns_packet_len_max: usize,
     server_timeout: u64,
 ) {
@@ -1445,6 +1445,10 @@ async fn process_tcp_connection(
                                             stream_arc.clone(),
                                         );
 
+                                        // Cancelation channel for the query
+                                        let (cancel_tx, cancel_rx) =
+                                            tokio::sync::oneshot::channel();
+
                                         // Add the client to the slab
                                         let client_slot = {
                                             let mut slab = tcp_clients_slab.lock().await;
@@ -1453,19 +1457,14 @@ async fn process_tcp_connection(
                                             if slab.is_full() {
                                                 debug!("TCP slab is full, removing oldest client");
                                                 // Remove the oldest client from the slab
-                                                if slab.pop_back().is_some() {
-                                                    debug!("Removed oldest client from TCP slab");
-                                                } else {
-                                                    debug!(
-                                                        "Failed to remove oldest client from TCP slab"
-                                                    );
-                                                    return;
+                                                if let Some(cancel_tx) = slab.pop_back() {
+                                                    cancel_tx.send(()).ok();
                                                 }
                                             }
 
                                             // Add the new client to the front of the slab
                                             let slot = slab
-                                                .push_front(client.clone())
+                                                .push_front(cancel_tx)
                                                 .expect("Failed to add TCP client to slab");
 
                                             // Increment the active TCP clients counter
@@ -1482,8 +1481,6 @@ async fn process_tcp_connection(
                                         };
 
                                         // Process the client query directly
-                                        let (cancel_tx, cancel_rx) =
-                                            tokio::sync::oneshot::channel();
                                         client.process_query(cancel_rx).await;
                                         debug!("Completed processing task for TCP client {addr}");
 
@@ -1836,12 +1833,14 @@ async fn main() -> EtchDnsResult<()> {
     debug!(
         "Using a maximum of {max_udp_clients} UDP clients and {max_tcp_clients} TCP clients in the slabs"
     );
-    let udp_clients_slab = Arc::new(Mutex::new(
-        Slab::with_capacity(max_udp_clients).expect("Failed to create UDP clients slab"),
-    ));
-    let tcp_clients_slab = Arc::new(Mutex::new(
-        Slab::with_capacity(max_tcp_clients).expect("Failed to create TCP clients slab"),
-    ));
+    let udp_clients_slab: Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>> =
+        Arc::new(Mutex::new(
+            Slab::with_capacity(max_udp_clients).expect("Failed to create UDP clients slab"),
+        ));
+    let tcp_clients_slab: Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>> =
+        Arc::new(Mutex::new(
+            Slab::with_capacity(max_tcp_clients).expect("Failed to create TCP clients slab"),
+        ));
 
     // Create global statistics tracker
     let global_stats = Arc::new(SharedStats::new());
@@ -2305,6 +2304,9 @@ async fn main() -> EtchDnsResult<()> {
                         tokio::spawn(async move {
                             debug!("Started processing task for UDP client {addr}");
 
+                            // Cancelation channel for the query
+                            let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
                             // Add the client to the slab
                             let client_slot = {
                                 let mut slab = udp_clients_slab_clone.lock().await;
@@ -2313,17 +2315,14 @@ async fn main() -> EtchDnsResult<()> {
                                 if slab.is_full() {
                                     debug!("UDP slab is full, removing oldest client");
                                     // Remove the oldest client from the slab
-                                    if slab.pop_back().is_some() {
-                                        debug!("Removed oldest client from UDP slab");
-                                    } else {
-                                        debug!("Failed to remove oldest client from UDP slab");
-                                        return;
+                                    if let Some(cancel_tx) = slab.pop_back() {
+                                        cancel_tx.send(()).ok();
                                     }
                                 }
 
                                 // Add the new client to the front of the slab
                                 let slot = slab
-                                    .push_front(client.clone())
+                                    .push_front(cancel_tx)
                                     .expect("Failed to add UDP client to slab");
 
                                 // Increment the active UDP clients counter
@@ -2340,7 +2339,6 @@ async fn main() -> EtchDnsResult<()> {
                             };
 
                             // Process the client query
-                            let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
                             client.process_query(cancel_rx).await;
                             debug!("Completed processing task for UDP client {addr}");
 
