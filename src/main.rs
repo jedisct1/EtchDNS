@@ -1633,6 +1633,7 @@ impl Client for UDPClient {
             // Send the response back to the client
             let socket = unsafe { std::net::UdpSocket::from_raw_fd(self.socket.as_raw_fd()) };
             socket.send_to(&response_data, self.addr).ok();
+            std::mem::forget(socket);
         }
     }
 }
