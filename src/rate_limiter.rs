@@ -235,6 +235,7 @@ impl RateLimiter {
     /// Get statistics about current rate limiter state
     ///
     /// This is useful for diagnostics and monitoring
+    #[allow(dead_code)]
     pub async fn get_stats(&self) -> RateLimiterStats {
         let state = self.state.lock().await;
 
@@ -270,6 +271,7 @@ impl RateLimiter {
 
 /// Statistics about the current state of the rate limiter
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RateLimiterStats {
     /// Total number of clients being tracked
     pub total_tracked_clients: usize,

@@ -52,9 +52,13 @@ const DNS_FLAGS_AD: u16 = 1u16 << 5; // Authentic Data (DNSSEC)
 
 // DNS opcodes (in bits 11-14 of the flags field)
 pub const DNS_OPCODE_QUERY: u8 = 0; // Standard query
+#[allow(dead_code)]
 pub const DNS_OPCODE_IQUERY: u8 = 1; // Inverse query
+#[allow(dead_code)]
 pub const DNS_OPCODE_STATUS: u8 = 2; // Server status request
+#[allow(dead_code)]
 pub const DNS_OPCODE_NOTIFY: u8 = 4; // Zone change notification
+#[allow(dead_code)]
 pub const DNS_OPCODE_UPDATE: u8 = 5; // Dynamic update
 
 /// Validates that a DNS packet looks valid
@@ -330,6 +334,7 @@ pub fn opcode(packet: &[u8]) -> u8 {
 
 /// Checks if the packet is a standard query
 #[inline]
+#[allow(dead_code)]
 pub fn is_standard_query(packet: &[u8]) -> bool {
     !is_response(packet) && opcode(packet) == DNS_OPCODE_QUERY
 }
