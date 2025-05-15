@@ -104,6 +104,20 @@ fn format_metrics(stats: &GlobalStats) -> String {
         stats.active_inflight_queries
     ));
 
+    output.push_str("# HELP etchdns_udp_receive_errors Total number of UDP receive errors\n");
+    output.push_str("# TYPE etchdns_udp_receive_errors counter\n");
+    output.push_str(&format!(
+        "etchdns_udp_receive_errors {}\n",
+        stats.udp_receive_errors
+    ));
+
+    output.push_str("# HELP etchdns_tcp_accept_errors Total number of TCP accept errors\n");
+    output.push_str("# TYPE etchdns_tcp_accept_errors counter\n");
+    output.push_str(&format!(
+        "etchdns_tcp_accept_errors {}\n",
+        stats.tcp_accept_errors
+    ));
+
     // Per-resolver metrics
     output.push_str("# HELP etchdns_resolver_response_time_ms Average response time in milliseconds per resolver\n");
     output.push_str("# TYPE etchdns_resolver_response_time_ms gauge\n");
