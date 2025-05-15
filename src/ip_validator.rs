@@ -364,9 +364,7 @@ impl IpRange {
     pub fn v4(base: Ipv4Addr, prefix_len: u8) -> Self {
         // Validate prefix length
         if prefix_len > 32 {
-            panic!(
-                "IPv4 prefix length must be between 0 and 32, got {prefix_len}"
-            );
+            panic!("IPv4 prefix length must be between 0 and 32, got {prefix_len}");
         }
 
         // Ensure the base address has all bits outside the prefix set to 0
@@ -388,9 +386,7 @@ impl IpRange {
     pub fn v6(base: Ipv6Addr, prefix_len: u8) -> Self {
         // Validate prefix length
         if prefix_len > 128 {
-            panic!(
-                "IPv6 prefix length must be between 0 and 128, got {prefix_len}"
-            );
+            panic!("IPv6 prefix length must be between 0 and 128, got {prefix_len}");
         }
 
         // Clean the base IP by applying the netmask

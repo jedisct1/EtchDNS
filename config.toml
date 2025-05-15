@@ -261,11 +261,11 @@ enable_strict_ip_validation = false
 
 # Block private IP address ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
 # Default: true
-block_private_ips = true
+block_private_ips = false
 
 # Block loopback IP address ranges (127.0.0.0/8, ::1)
 # Default: true
-block_loopback_ips = true
+block_loopback_ips = false
 
 # Minimum port to allow from clients (ports below this will be rejected)
 # Default: 1024 (privileged ports are below 1024)

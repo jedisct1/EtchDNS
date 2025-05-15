@@ -2529,9 +2529,7 @@ async fn main() -> EtchDnsResult<()> {
                                 Ok(_) => {
                                     // Check port as a separate step for better logging
                                     if let Err(e) = task_ip_validator.validate_port(addr.port()) {
-                                        warn!(
-                                            "Disallowing connection from TCP client {addr}: {e}"
-                                        );
+                                        warn!("Disallowing connection from TCP client {addr}: {e}");
                                         continue;
                                     }
                                 }
