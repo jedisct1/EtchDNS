@@ -272,6 +272,22 @@ struct Config {
     #[serde(default = "default_query_log_include_query_class")]
     query_log_include_query_class: bool,
 
+    /// Maximum size in bytes before rotating log files (0 to disable size-based rotation)
+    #[serde(default = "default_query_log_rotation_size")]
+    query_log_rotation_size: usize,
+
+    /// Time interval for log rotation ("hourly", "daily", "weekly", "monthly")
+    #[serde(default = "default_query_log_rotation_interval")]
+    query_log_rotation_interval: String,
+
+    /// Number of rotated log files to keep
+    #[serde(default = "default_query_log_rotation_count")]
+    query_log_rotation_count: usize,
+
+    /// Whether to compress rotated log files
+    #[serde(default = "default_query_log_compression")]
+    query_log_compression: bool,
+
     /// Username to drop privileges to after binding to sockets
     /// If not set, privileges will not be dropped
     #[serde(default)]
@@ -448,6 +464,22 @@ fn default_query_log_include_query_type() -> bool {
 
 fn default_query_log_include_query_class() -> bool {
     false // Don't include query class in query log by default
+}
+
+fn default_query_log_rotation_size() -> usize {
+    0 // Disable size-based rotation by default
+}
+
+fn default_query_log_rotation_interval() -> String {
+    "daily".to_string() // Rotate logs daily by default
+}
+
+fn default_query_log_rotation_count() -> usize {
+    7 // Keep 7 rotated log files by default
+}
+
+fn default_query_log_compression() -> bool {
+    false // Don't compress rotated log files by default
 }
 
 fn default_enable_ecs() -> bool {
@@ -1946,6 +1978,10 @@ async fn main() -> EtchDnsResult<()> {
         config.query_log_include_client_addr,
         config.query_log_include_query_type,
         config.query_log_include_query_class,
+        config.query_log_rotation_size,
+        config.query_log_rotation_interval.clone(),
+        config.query_log_rotation_count,
+        config.query_log_compression,
     ));
 
     if let Some(log_file) = &config.query_log_file {

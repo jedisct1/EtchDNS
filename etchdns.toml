@@ -215,6 +215,22 @@ query_log_include_query_type = true
 # Whether to include query class in query log (default: false)
 query_log_include_query_class = false
 
+# Maximum size in bytes before rotating log files (default: 0 - disabled)
+# Set to 0 to disable size-based rotation
+# Example: 10485760 (10MB)
+query_log_rotation_size = 0
+
+# Time interval for log rotation (default: "daily")
+# Options: "hourly", "daily", "weekly", "monthly", "never"
+query_log_rotation_interval = "daily"
+
+# Number of rotated log files to keep (default: 7)
+# After this many files, oldest logs will be deleted
+query_log_rotation_count = 7
+
+# Whether to compress rotated log files with gzip (default: false)
+query_log_compression = false
+
 #------------------------------------------------------------------------------
 # Extensions
 #------------------------------------------------------------------------------
