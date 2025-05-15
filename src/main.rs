@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use slabigator::Slab;
 use std::fs;
 use std::net::SocketAddr;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,9 +41,6 @@ use probe::probe_server;
 use query_manager::QueryManager;
 use stats::SharedStats;
 
-#[cfg(target_os = "linux")]
-use std::os::fd::AsRawFd;
-#[cfg(target_os = "linux")]
 #[macro_use]
 extern crate bpf;
 
@@ -1633,16 +1631,8 @@ impl Client for UDPClient {
             }
 
             // Send the response back to the client
-            match self.socket.send_to(&response_data, self.addr).await {
-                Ok(bytes_sent) => {
-                    debug!("Sent {} bytes back to UDP client {}", bytes_sent, self.addr);
-                    debug!("Response successfully sent to client {}", self.addr);
-                }
-                Err(e) => {
-                    error!("Failed to send response to UDP client {}: {}", self.addr, e);
-                    debug!("Error details: {e:?}");
-                }
-            }
+            let socket = unsafe { std::net::UdpSocket::from_raw_fd(self.socket.as_raw_fd()) };
+            socket.send_to(&response_data, self.addr).ok();
         }
     }
 }
@@ -1745,7 +1735,7 @@ async fn main() -> EtchDnsResult<()> {
     // Bind to each address
     for socket_addr in &socket_addrs {
         // Bind UDP socket
-        let mut udp_socket = UdpSocket::bind(socket_addr)
+        let udp_socket = UdpSocket::bind(socket_addr)
             .await
             .map_err(EtchDnsError::SocketBindError)?;
         info!(
@@ -1754,28 +1744,9 @@ async fn main() -> EtchDnsResult<()> {
                 .local_addr()
                 .map_err(EtchDnsError::SocketBindError)?
         );
-        _ = &mut udp_socket;
-        #[cfg(target_os = "linux")]
-        {
-            let upstream_socket_std = upstream_socket.into_std().map_err(|e| {
-                DnsError::UpstreamError(format!(
-                    "Failed to convert upstream socket to standard: {e}"
-                ))
-            })?;
-            let upstream_socket_fd = upstream_socket_std.as_raw_fd();
-            let filter = bpfprog!(8,72 0 0 4,53 0 5 17,72 0 0 12,21 0 3 1,72 0 0 18,37 1 0 1,6 0 0 262144,6 0 0 0);
-            bpf::attach_filter(upstream_socket_fd, filter).ok();
-            upstream_socket_std.set_nonblocking(true).map_err(|e| {
-                DnsError::UpstreamError(format!(
-                    "Failed to set upstream socket to non-blocking: {e}"
-                ))
-            })?;
-            udp_socket = UdpSocket::from_std(upstream_socket_std).map_err(|e| {
-                DnsError::UpstreamError(format!(
-                    "Failed to convert standard socket back to UDP: {e}"
-                ))
-            })?;
-        }
+        let upstream_socket_fd = udp_socket.as_raw_fd();
+        let filter = bpfprog!(8,72 0 0 4,53 0 5 17,72 0 0 12,21 0 3 1,72 0 0 18,37 1 0 1,6 0 0 262144,6 0 0 0);
+        bpf::attach_filter(upstream_socket_fd, filter).ok();
         udp_socket.set_tos(0x10).ok();
 
         // Create a shareable UDP socket
