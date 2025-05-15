@@ -188,23 +188,79 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
     }
 
     // Try to validate the answer, authority, and additional sections
-    let total_rr_count = an_count as usize + ns_count as usize + ar_count as usize;
+    // Check for potential overflow when calculating total_rr_count
+    let an_count_usize = an_count as usize;
+    let ns_count_usize = ns_count as usize;
+    let ar_count_usize = ar_count as usize;
+    
+    // Check for overflow when adding up the counts
+    let total_rr_count = match an_count_usize.checked_add(ns_count_usize) {
+        Some(count) => match count.checked_add(ar_count_usize) {
+            Some(total) => total,
+            None => {
+                return Err(DnsError::InvalidPacket(
+                    "Integer overflow in resource record count calculation".to_string(),
+                ));
+            }
+        },
+        None => {
+            return Err(DnsError::InvalidPacket(
+                "Integer overflow in resource record count calculation".to_string(),
+            ));
+        }
+    };
+    
+    // Validate against maximum sensible number of records
+    const MAX_SENSIBLE_RR_COUNT: usize = 1000;
+    if total_rr_count > MAX_SENSIBLE_RR_COUNT {
+        return Err(DnsError::InvalidPacket(format!(
+            "Excessive resource record count: {total_rr_count} (max {MAX_SENSIBLE_RR_COUNT})"
+        )));
+    }
 
     if total_rr_count > 0 {
         match traverse_rrs(packet, offset, total_rr_count, |rr_offset| {
             // Validate record type
+            // Make sure we have at least 2 bytes to read at rr_offset
+            if packet.len() < rr_offset + 2 {
+                return Err(DnsError::PacketTooShort { offset: rr_offset });
+            }
             let _rr_type = BigEndian::read_u16(&packet[rr_offset..rr_offset + 2]);
 
-            // Validate TTL (shouldn't be unreasonably large)
+            // Validate TTL - make sure we have at least 8 bytes at rr_offset
+            if packet.len() < rr_offset + 8 {
+                return Err(DnsError::PacketTooShort { offset: rr_offset });
+            }
             let ttl = BigEndian::read_u32(&packet[rr_offset + 4..rr_offset + 8]);
             if ttl > 604800 {
                 // 7 days in seconds
                 debug!("Unusual: DNS record with TTL > 7 days: {ttl} seconds");
             }
 
-            // Validate RDLENGTH
+            // Validate RDLENGTH - make sure we have at least 10 bytes at rr_offset
+            if packet.len() < rr_offset + 10 {
+                return Err(DnsError::PacketTooShort { offset: rr_offset });
+            }
             let rdlength = BigEndian::read_u16(&packet[rr_offset + 8..rr_offset + 10]) as usize;
-            if packet.len() < rr_offset + 10 + rdlength {
+            
+            // Check for potential overflow when calculating rr_offset + 10 + rdlength
+            let rr_data_end = match rr_offset.checked_add(10) {
+                Some(offset_plus_10) => match offset_plus_10.checked_add(rdlength) {
+                    Some(end_offset) => end_offset,
+                    None => {
+                        return Err(DnsError::InvalidRecord(
+                            "Integer overflow calculating record data bounds".to_string(),
+                        ));
+                    }
+                },
+                None => {
+                    return Err(DnsError::InvalidRecord(
+                        "Integer overflow calculating record data bounds".to_string(),
+                    ));
+                }
+            };
+            
+            if packet.len() < rr_data_end {
                 return Err(DnsError::InvalidRecord(format!(
                     "Record data length ({rdlength}) exceeds packet bounds"
                 )));
@@ -332,6 +388,15 @@ pub fn is_dnssec_requested(packet: &[u8]) -> DnsResult<bool> {
 #[allow(dead_code)]
 pub fn query_name(packet: &[u8]) -> DnsResult<String> {
     let qname_bytes = qname(packet)?;
+    
+    // Validate maximum length before conversion
+    if qname_bytes.len() > DNS_MAX_HOSTNAME_SIZE {
+        return Err(DnsError::DomainNameTooLong {
+            length: qname_bytes.len(),
+            max_length: DNS_MAX_HOSTNAME_SIZE,
+        });
+    }
+    
     let qname_str = match str::from_utf8(&qname_bytes) {
         Ok(s) => s,
         Err(_) => {
@@ -340,6 +405,15 @@ pub fn query_name(packet: &[u8]) -> DnsResult<String> {
             ));
         }
     };
+    
+    // Check once more for DoS using large string allocations
+    if qname_str.len() > DNS_MAX_HOSTNAME_SIZE {
+        return Err(DnsError::DomainNameTooLong {
+            length: qname_str.len(),
+            max_length: DNS_MAX_HOSTNAME_SIZE,
+        });
+    }
+    
     Ok(qname_str.to_string())
 }
 
@@ -550,7 +624,7 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
 
     let mut current_offset = offset;
     let mut jumps = 0;
-    let mut total_name_len = 0;
+    let mut total_name_len: usize = 0;
 
     loop {
         if current_offset >= packet_len {
@@ -573,7 +647,18 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
 
                 // For the return value, we only advance 2 bytes for the pointer
                 if jumps == 1 {
-                    let result_offset = current_offset + 2;
+                    // Use checked_add to prevent integer overflow
+                    let result_offset = match current_offset.checked_add(2) {
+                        Some(offset) => offset,
+                        None => {
+                            return Err(DnsError::InvalidCompressionPointer {
+                                offset: current_offset,
+                                pointer: 0,
+                                packet_size: packet_len,
+                            });
+                        }
+                    };
+                    
                     if result_offset > packet_len {
                         return Err(DnsError::PacketTooShort {
                             offset: current_offset,
@@ -583,8 +668,26 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
                     break;
                 }
 
-                // Follow the pointer
-                let pointer = ((label_len & 0x3f) << 8) | (packet[current_offset + 1] as usize);
+                // Follow the pointer - safely extract second byte
+                if current_offset + 1 >= packet_len {
+                    return Err(DnsError::PacketTooShort {
+                        offset: current_offset,
+                    });
+                }
+                
+                // Calculate pointer value with overflow check
+                let second_byte = packet[current_offset + 1] as usize;
+                let first_part = (label_len & 0x3f) << 8;
+                let pointer = match first_part.checked_add(second_byte) {
+                    Some(ptr) => ptr,
+                    None => {
+                        return Err(DnsError::InvalidCompressionPointer {
+                            offset: current_offset,
+                            pointer: first_part,
+                            packet_size: packet_len,
+                        });
+                    }
+                };
                 if pointer >= packet_len {
                     return Err(DnsError::InvalidCompressionPointer {
                         offset: current_offset,
@@ -596,7 +699,14 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
             }
             0 => {
                 // End of domain name
-                current_offset += 1;
+                current_offset = match current_offset.checked_add(1) {
+                    Some(offset) => offset,
+                    None => {
+                        return Err(DnsError::PacketTooShort {
+                            offset: current_offset,
+                        });
+                    }
+                };
                 break;
             }
             label_len => {
@@ -604,15 +714,42 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
                 if label_len >= 0x40 {
                     return Err(DnsError::LabelTooLong { length: label_len });
                 }
-                if packet_len - current_offset <= label_len {
+                
+                // Make sure we don't have integer underflow in the packet_len - current_offset check
+                let remaining_bytes = if current_offset <= packet_len {
+                    packet_len - current_offset
+                } else {
+                    return Err(DnsError::PacketTooShort {
+                        offset: current_offset,
+                    });
+                };
+                
+                // Check we have enough bytes for label_len
+                if remaining_bytes <= label_len {
                     return Err(DnsError::PacketTooShort {
                         offset: current_offset,
                     });
                 }
 
-                // Update the total name length
+                // Update the total name length with overflow check
                 // Add 1 for the dot between labels (or the length byte in the packet)
-                total_name_len += label_len + 1;
+                total_name_len = match label_len.checked_add(1) {
+                    Some(len) => match total_name_len.checked_add(len) {
+                        Some(total) => total,
+                        None => {
+                            return Err(DnsError::DomainNameTooLong {
+                                length: u32::MAX as usize,
+                                max_length: DNS_MAX_HOSTNAME_SIZE,
+                            });
+                        }
+                    },
+                    None => {
+                        return Err(DnsError::DomainNameTooLong {
+                            length: u32::MAX as usize,
+                            max_length: DNS_MAX_HOSTNAME_SIZE,
+                        });
+                    }
+                };
 
                 // Check if the total name length exceeds the maximum
                 if total_name_len > DNS_MAX_HOSTNAME_SIZE {
@@ -622,7 +759,24 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
                     });
                 }
 
-                current_offset += label_len + 1;
+                // Safely advance the offset
+                let label_plus_1 = match label_len.checked_add(1) {
+                    Some(len) => len,
+                    None => {
+                        return Err(DnsError::LabelTooLong {
+                            length: u32::MAX as usize,
+                        });
+                    }
+                };
+                
+                current_offset = match current_offset.checked_add(label_plus_1) {
+                    Some(offset) => offset,
+                    None => {
+                        return Err(DnsError::PacketTooShort {
+                            offset: current_offset,
+                        });
+                    }
+                };
             }
         }
     }
@@ -647,14 +801,37 @@ where
         // skip_name already includes hostname size validation
         offset = skip_name(packet, offset)?;
 
-        if packet_len - offset < 10 {
-            return Err(DnsError::PacketTooShort { offset: 0 });
+        // Check if we have enough bytes for the fixed RR header fields (10 bytes)
+        if packet_len < offset || packet_len - offset < 10 {
+            return Err(DnsError::PacketTooShort { offset });
         }
 
         callback(offset)?;
 
-        let rdlen = BigEndian::read_u16(&packet[offset + 8..]) as usize;
-        if packet_len - offset < 10 + rdlen {
+        // Safely read RDLEN
+        if offset + 8 >= packet_len {
+            return Err(DnsError::PacketTooShort { offset });
+        }
+        let rdlen = BigEndian::read_u16(&packet[offset + 8..offset + 10]) as usize;
+        
+        // Check for overflow when calculating rr_offset + 10 + rdlen
+        let rdata_end = match offset.checked_add(10) {
+            Some(offset_plus_10) => match offset_plus_10.checked_add(rdlen) {
+                Some(end_offset) => end_offset,
+                None => {
+                    return Err(DnsError::InvalidRecord(
+                        "Integer overflow calculating record data bounds".to_string(),
+                    ));
+                }
+            },
+            None => {
+                return Err(DnsError::InvalidRecord(
+                    "Integer overflow calculating record offset".to_string(),
+                ));
+            }
+        };
+        
+        if packet_len < rdata_end {
             return Err(DnsError::InvalidRecord(
                 "Record length would exceed packet length".to_string(),
             ));
@@ -666,7 +843,7 @@ where
         match rr_type {
             DNS_TYPE_NS | DNS_TYPE_CNAME | DNS_TYPE_PTR | DNS_TYPE_MX | DNS_TYPE_SRV => {
                 // These record types contain domain names in their RDATA
-                // Ccheck that the RDATA size is reasonable
+                // Check that the RDATA size is reasonable
                 if rdlen > DNS_MAX_HOSTNAME_SIZE {
                     debug!("Large RDATA for domain name record: {rdlen} bytes (type: {rr_type})");
                 }
@@ -674,7 +851,22 @@ where
             _ => {}
         }
 
-        offset += 10 + rdlen;
+        // Safely advance the offset
+        offset = match offset.checked_add(10) {
+            Some(o) => match o.checked_add(rdlen) {
+                Some(final_offset) => final_offset,
+                None => {
+                    return Err(DnsError::InvalidRecord(
+                        "Integer overflow calculating next record offset".to_string(),
+                    ));
+                }
+            },
+            None => {
+                return Err(DnsError::InvalidRecord(
+                    "Integer overflow calculating next record offset".to_string(),
+                ));
+            }
+        };
     }
 
     Ok(offset)
@@ -697,14 +889,37 @@ where
         // skip_name already includes hostname size validation
         offset = skip_name(packet, offset)?;
 
-        if packet_len - offset < 10 {
-            return Err(DnsError::PacketTooShort { offset: 0 });
+        // Check if we have enough bytes for the fixed RR header fields (10 bytes)
+        if packet_len < offset || packet_len - offset < 10 {
+            return Err(DnsError::PacketTooShort { offset });
         }
 
         callback(packet, offset)?;
 
-        let rdlen = BigEndian::read_u16(&packet[offset + 8..]) as usize;
-        if packet_len - offset < 10 + rdlen {
+        // Safely read RDLEN
+        if offset + 8 >= packet_len {
+            return Err(DnsError::PacketTooShort { offset });
+        }
+        let rdlen = BigEndian::read_u16(&packet[offset + 8..offset + 10]) as usize;
+        
+        // Check for overflow when calculating rr_offset + 10 + rdlen
+        let rdata_end = match offset.checked_add(10) {
+            Some(offset_plus_10) => match offset_plus_10.checked_add(rdlen) {
+                Some(end_offset) => end_offset,
+                None => {
+                    return Err(DnsError::InvalidRecord(
+                        "Integer overflow calculating record data bounds".to_string(),
+                    ));
+                }
+            },
+            None => {
+                return Err(DnsError::InvalidRecord(
+                    "Integer overflow calculating record offset".to_string(),
+                ));
+            }
+        };
+        
+        if packet_len < rdata_end {
             return Err(DnsError::InvalidRecord(
                 "Record length would exceed packet length".to_string(),
             ));
@@ -724,7 +939,22 @@ where
             _ => {}
         }
 
-        offset += 10 + rdlen;
+        // Safely advance the offset
+        offset = match offset.checked_add(10) {
+            Some(o) => match o.checked_add(rdlen) {
+                Some(final_offset) => final_offset,
+                None => {
+                    return Err(DnsError::InvalidRecord(
+                        "Integer overflow calculating next record offset".to_string(),
+                    ));
+                }
+            },
+            None => {
+                return Err(DnsError::InvalidRecord(
+                    "Integer overflow calculating next record offset".to_string(),
+                ));
+            }
+        };
     }
 
     Ok(offset)
