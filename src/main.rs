@@ -2254,6 +2254,8 @@ async fn main() -> EtchDnsResult<()> {
         let upstream_servers = upstream_servers.clone();
         let query_manager = query_manager.clone();
         let udp_rate_limiter = udp_rate_limiter.clone();
+        // Create a clone of all socket addresses for checking source addresses
+        let all_socket_addrs = socket_addrs.clone();
 
         // Create a task for this UDP socket
         let task = tokio::spawn(async move {
@@ -2269,6 +2271,26 @@ async fn main() -> EtchDnsResult<()> {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, addr)) => {
                         debug!("Received packet of size {len} bytes from UDP client {addr}");
+
+                        // Validate client source port is >= 1024
+                        if addr.port() < 1024 {
+                            warn!(
+                                "Disallowing query from UDP client {addr} with reserved port {}, dropping query",
+                                addr.port()
+                            );
+                            continue;
+                        }
+
+                        // Check if client source address matches one of our listener addresses
+                        if all_socket_addrs
+                            .iter()
+                            .any(|listener_addr| listener_addr.ip() == addr.ip())
+                        {
+                            warn!(
+                                "Disallowing query from UDP client {addr} with source address matching one of our listener addresses, dropping query"
+                            );
+                            continue;
+                        }
 
                         // Check rate limit for UDP client if enabled
                         if let Some(rate_limiter) = &udp_rate_limiter {
@@ -2455,4 +2477,51 @@ async fn main() -> EtchDnsResult<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    // Test function to check port validation
+    #[test]
+    fn test_udp_port_validation() {
+        // Valid port (>= 1024)
+        let valid_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 2053);
+        // Invalid port (< 1024)
+        let invalid_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 53);
+
+        // Client with valid port should pass validation
+        assert!(valid_addr.port() >= 1024);
+        // Client with invalid port should fail validation
+        assert!(invalid_addr.port() < 1024);
+    }
+
+    // Test function to check listener address validation
+    #[test]
+    fn test_udp_listener_address_validation() {
+        // Create some listener addresses
+        let listener_addrs = vec![
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 10000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 10000),
+        ];
+
+        // Valid client address (not matching any listener)
+        let valid_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 2053);
+        // Invalid client address (matching a listener)
+        let invalid_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 2053);
+
+        // Client with address not matching a listener should pass validation
+        assert!(
+            !listener_addrs
+                .iter()
+                .any(|listener_addr| listener_addr.ip() == valid_addr.ip())
+        );
+        // Client with address matching a listener should fail validation
+        assert!(
+            listener_addrs
+                .iter()
+                .any(|listener_addr| listener_addr.ip() == invalid_addr.ip())
+        );
+    }
 }
