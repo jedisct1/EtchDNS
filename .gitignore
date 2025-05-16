@@ -1,0 +1,7 @@
+*~
+.claude
+.zig-cache
+CLAUDE.md
+zig-out
+Cargo.lock
+target
