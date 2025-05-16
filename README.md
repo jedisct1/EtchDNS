@@ -53,22 +53,24 @@ EtchDNS is a caching DNS proxy designed for security and reliability. It acts as
 
 ### 🔒 Security
 - **Domain Filtering**: Whitelist and blacklist support with allowed/NX zones
-- **IP Validation**: Block suspicious IP ranges and prevent address spoofing
+- **IP Validation**: Block suspicious IP ranges, validate client ports, and prevent address spoofing
 - **Rate Limiting**: Fine-grained control for each protocol (UDP/TCP/DoH)
 - **Transaction ID Masking**: Protection against cache poisoning attacks
-- **Privilege Dropping**: Run with minimal system access after initialization
+- **Privilege Dropping**: Run with minimal system access after initialization (user, group, and chroot)
 - **Thorough Request Validation**: Comprehensive DNS packet validation
 
 ### 💪 Reliability
 - **Automatic Failover**: Immediate detection of server outages for seamless query routing
 - **Serve Stale**: Continue serving expired cache entries during upstream failures
-- **Health Monitoring**: Regular probing of upstream servers to ensure availability
+- **Health Monitoring**: Regular probing of upstream servers with configurable intervals
 - **Latency Guarantees**: Ensures consistent response times even during upstream slowdowns
+- **Fine-grained Controls**: Separate connection limits for different protocols and in-flight queries
 
 ### 📊 Monitoring
 - **Prometheus Metrics**: Comprehensive observability with Prometheus endpoint
 - **Remote Control API**: HTTP interface for status monitoring and cache management
 - **Detailed Logging**: Configurable query logging with customizable details
+- **Log Rotation**: Size and time-based log rotation with compression support
 
 ### 🧩 Extensibility (WebAssembly)
 - **Multi-language Plugin Support**: Create custom plugins in any language that compiles to WebAssembly (C/C++, Zig, AssemblyScript, etc.)
@@ -240,11 +242,11 @@ control_path = "/control"
 ```
 
 Available endpoints:
-- `GET /control/status`: Server status
-- `GET /control/cache`: Get cache status information
+- `GET /control/status`: Get comprehensive server status including uptime, connection stats, and health information
+- `GET /control/cache`: Get cache status information including size, hit/miss rates, and entry counts
 - `DELETE /control/cache`: Clear entire cache
-- `DELETE /control/cache/zone/<example.com>`: Clear entries for a specific zone
-- `DELETE /control/cache/name/<example.com>`: Clear a specific entry
+- `DELETE /control/cache/zone/<example.com>`: Clear all entries for a specific zone
+- `DELETE /control/cache/name/<example.com>`: Clear a specific entry by name
 
 ### WebAssembly Extensions (WIP)
 
@@ -269,12 +271,18 @@ One of EtchDNS's most powerful features is its ability to be extended through We
 - **Language Flexibility**: Write extensions in your preferred programming language
 - **Sandboxed Execution**: Extensions run in a secure sandbox with minimal overhead
 - **Hot Reloading**: Update extensions without restarting EtchDNS
+- **Stateful Processing**: Maintain state across DNS queries for complex policy enforcement
+- **Extism Integration**: Built on the powerful Extism plugin system with optional WASI support
 
 #### Current Capabilities:
 
 The current implementation supports the following hook points:
 
 - `hook_client_query_received`: Called when a client query is received, before checking the cache
+  - Return code 0: Continue normal processing
+  - Return code -1: Return minimal response with REFUSED rcode
+
+Hooks receive query information in a structured JSON format and can process data from any language that compiles to WebAssembly.
 
 #### Example Implementation:
 
@@ -301,6 +309,9 @@ For optimal performance, consider these configuration guidelines:
 3. **Load Balancing**: Use `fastest` for highest performance, `p2` for a good balance
 4. **Serve Stale**: Enable `serve_stale_grace_time` for improved reliability
 5. **Rate Limiting**: Set appropriate limits that prevent DoS while allowing legitimate traffic
+6. **In-flight Queries**: Adjust `max_inflight_queries` for query aggregation efficiency
+7. **TTL Settings**: Fine-tune various TTL settings to optimize cache performance
+8. **Probe Interval**: Configure `probe_interval` to balance load balancer accuracy with network overhead
 
 ## Security
 
@@ -333,7 +344,7 @@ min_client_port = 1024
 blocked_ip_ranges = ["203.0.113.0/24", "198.51.100.0/24"]
 ```
 
-This helps protect against IP spoofing, abuse from internal networks, and connections from known problematic IP ranges.
+This helps protect against IP spoofing, abuse from internal networks, and connections from known problematic IP ranges. Client port validation adds another layer of security by blocking connections from privileged ports, which are commonly used in spoofing attacks.
 
 ## Development
 
@@ -375,18 +386,32 @@ To build a WebAssembly extension for EtchDNS:
    rustup target add wasm32-unknown-unknown
    ```
 
-3. Build the example plugin or your own extension:
+3. Build the example Rust plugin or your own extension:
    ```sh
-   cd hooks-plugin
+   cd webassembly-plugins/rust
    cargo build --target wasm32-unknown-unknown --release
    ```
 
-4. The compiled WebAssembly module will be available at `target/wasm32-unknown-unknown/release/hooks_plugin.wasm`
+4. The compiled WebAssembly module will be available at `target/wasm32-unknown-unknown/release/etchdns_hooks_rust.wasm`
 
 5. Copy the WebAssembly module to your EtchDNS directory and update the configuration:
    ```sh
-   cp target/wasm32-unknown-unknown/release/hooks_plugin.wasm /path/to/etchdns/hooks.wasm
+   cp target/wasm32-unknown-unknown/release/etchdns_hooks_rust.wasm /path/to/etchdns/hooks.wasm
    ```
+
+Alternatively, you can build the Zig example plugin:
+
+1. Navigate to the Zig plugin directory:
+   ```sh
+   cd webassembly-plugins/zig
+   ```
+
+2. Build the Zig plugin:
+   ```sh
+   zig build
+   ```
+
+3. The compiled WebAssembly module will be available in the `zig-out/bin/` directory
 
 For other languages, consult their respective WebAssembly compilation guides. The key requirement is that the resulting WASM module exports functions that match the hook interface defined by EtchDNS.
 
