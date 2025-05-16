@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload to release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2.2.1
         with:
           files: etchdns-*-linux-x86_64${{ matrix.suffix }}.tar.gz
 
@@ -135,7 +135,7 @@ jobs:
 
       - name: Upload to release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2.2.1
         with:
           files: etchdns-*-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}.zip
 
@@ -169,7 +169,7 @@ jobs:
           tar -czf "etchdns-${VERSION}-all.tar.gz" "etchdns-${VERSION}-all"
 
       - name: Upload combined artifact to release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2.2.1
         with:
           files: |
             etchdns-*-all.tar.gz
