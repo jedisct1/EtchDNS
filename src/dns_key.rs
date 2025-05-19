@@ -38,10 +38,8 @@ impl DNSKey {
 
     /// Creates a DNSKey from a DNS packet
     pub fn from_packet(packet: &[u8]) -> DnsResult<Self> {
-        // Validate the packet first
         dns_parser::validate_dns_packet(packet)?;
 
-        // Extract the query name using dns_parser's qname function
         let qname_bytes = dns_parser::qname(packet)?;
         let qname = match std::str::from_utf8(&qname_bytes) {
             Ok(s) => s.to_string(),
@@ -52,13 +50,9 @@ impl DNSKey {
             }
         };
 
-        // Extract the query type and class
         let (qtype, qclass) = dns_parser::query_type_class(packet)?;
-
-        // Check if DNSSEC is requested
         let dnssec = dns_parser::is_dnssec_requested(packet)?;
 
-        // Now new() returns a Result, so we can just propagate it
         DNSKey::new(qname, qtype, qclass, dnssec)
     }
 
