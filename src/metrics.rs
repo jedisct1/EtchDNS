@@ -7,7 +7,6 @@ use log::info;
 use slabigator::Slab;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::process;
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
@@ -63,15 +62,6 @@ fn format_metrics(
     // Initialize start time
     let start_time = init_start_time();
 
-    // Process information
-    output.push_str("# HELP etchdns_info Server information\n");
-    output.push_str("# TYPE etchdns_info gauge\n");
-    output.push_str(&format!(
-        "etchdns_info{{version=\"{}\", build=\"{}\"}} 1\n",
-        env!("CARGO_PKG_VERSION", "unknown"),
-        option_env!("BUILD_ID").unwrap_or("dev"),
-    ));
-
     // Uptime in seconds
     let uptime_secs = match SystemTime::now().duration_since(start_time) {
         Ok(duration) => duration.as_secs(),
@@ -81,38 +71,6 @@ fn format_metrics(
     output.push_str("# HELP etchdns_uptime_seconds Time since server startup in seconds\n");
     output.push_str("# TYPE etchdns_uptime_seconds counter\n");
     output.push_str(&format!("etchdns_uptime_seconds {}\n", uptime_secs));
-
-    // Get process ID
-    let pid = process::id();
-    output.push_str("# HELP etchdns_process_id Process ID of the server\n");
-    output.push_str("# TYPE etchdns_process_id gauge\n");
-    output.push_str(&format!("etchdns_process_id {}\n", pid));
-
-    // Add memory usage information if available
-    if let Ok(usage) = sys_info::mem_info() {
-        output.push_str("# HELP etchdns_system_memory_total_bytes Total system memory in bytes\n");
-        output.push_str("# TYPE etchdns_system_memory_total_bytes gauge\n");
-        output.push_str(&format!(
-            "etchdns_system_memory_total_bytes {}\n",
-            usage.total * 1024
-        ));
-
-        // Calculate used memory (total - free)
-        let used_memory = usage.total.saturating_sub(usage.free);
-        output.push_str("# HELP etchdns_system_memory_used_bytes Used system memory in bytes\n");
-        output.push_str("# TYPE etchdns_system_memory_used_bytes gauge\n");
-        output.push_str(&format!(
-            "etchdns_system_memory_used_bytes {}\n",
-            used_memory * 1024
-        ));
-
-        output.push_str("# HELP etchdns_system_memory_free_bytes Free system memory in bytes\n");
-        output.push_str("# TYPE etchdns_system_memory_free_bytes gauge\n");
-        output.push_str(&format!(
-            "etchdns_system_memory_free_bytes {}\n",
-            usage.free * 1024
-        ));
-    }
 
     // Global metrics
     output.push_str("# HELP etchdns_total_queries Total number of DNS queries processed\n");
