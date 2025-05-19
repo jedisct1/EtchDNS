@@ -2277,6 +2277,7 @@ async fn main() -> EtchDnsResult<()> {
                 Some(metrics_query_manager),
                 Some(metrics_udp_clients_slab),
                 Some(metrics_tcp_clients_slab),
+                Some(dns_cache.clone()),
             )
             .await
             {

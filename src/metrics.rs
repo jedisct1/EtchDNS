@@ -46,6 +46,8 @@ fn format_metrics(
     active_inflight_queries: usize,
     active_udp_clients: usize,
     active_tcp_clients: usize,
+    cache_size: Option<usize>,
+    cache_capacity: Option<usize>,
 ) -> String {
     let mut output = String::new();
 
@@ -86,6 +88,33 @@ fn format_metrics(
     output.push_str("# HELP etchdns_cache_misses Total number of DNS cache misses\n");
     output.push_str("# TYPE etchdns_cache_misses counter\n");
     output.push_str(&format!("etchdns_cache_misses {}\n", stats.cache_misses));
+
+    // Cache size and capacity
+    if let Some(size) = cache_size {
+        output.push_str("# HELP etchdns_cache_size Current number of entries in the DNS cache\n");
+        output.push_str("# TYPE etchdns_cache_size gauge\n");
+        output.push_str(&format!("etchdns_cache_size {}\n", size));
+    }
+
+    if let Some(capacity) = cache_capacity {
+        output.push_str("# HELP etchdns_cache_capacity Maximum capacity of the DNS cache\n");
+        output.push_str("# TYPE etchdns_cache_capacity gauge\n");
+        output.push_str(&format!("etchdns_cache_capacity {}\n", capacity));
+    }
+
+    // Calculate and output cache hit rate if we have both hits and misses
+    if stats.cache_hits > 0 || stats.cache_misses > 0 {
+        let total = stats.cache_hits + stats.cache_misses;
+        let hit_rate = if total > 0 {
+            stats.cache_hits as f64 / total as f64
+        } else {
+            0.0
+        };
+
+        output.push_str("# HELP etchdns_cache_hit_rate Cache hit rate (hits / total lookups)\n");
+        output.push_str("# TYPE etchdns_cache_hit_rate gauge\n");
+        output.push_str(&format!("etchdns_cache_hit_rate {:.4}\n", hit_rate));
+    }
 
     output.push_str("# HELP etchdns_active_udp_clients Current number of active UDP clients\n");
     output.push_str("# TYPE etchdns_active_udp_clients gauge\n");
@@ -193,6 +222,7 @@ async fn handle_request(
     query_manager: Option<Arc<crate::query_manager::QueryManager>>,
     udp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
     tcp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
+    dns_cache: Option<Arc<crate::cache::SyncDnsCache>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
 
@@ -218,12 +248,20 @@ async fn handle_request(
             None => 0, // Default to 0 if slab isn't available
         };
 
+        // Get cache metrics if available
+        let (cache_size, cache_capacity) = match &dns_cache {
+            Some(cache) => (Some(cache.len()), Some(cache.capacity())),
+            None => (None, None),
+        };
+
         // Format the metrics
         let metrics_text = format_metrics(
             &current_stats,
             active_inflight_queries,
             active_udp_clients,
             active_tcp_clients,
+            cache_size,
+            cache_capacity,
         );
 
         // Return the metrics
@@ -245,6 +283,7 @@ pub async fn start_metrics_server(
     query_manager: Option<Arc<crate::query_manager::QueryManager>>,
     udp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
     tcp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
+    dns_cache: Option<Arc<crate::cache::SyncDnsCache>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a TCP listener
     let listener = TcpListener::bind(addr).await?;
@@ -266,6 +305,7 @@ pub async fn start_metrics_server(
         let query_manager = query_manager.clone();
         let udp_clients_slab = udp_clients_slab.clone();
         let tcp_clients_slab = tcp_clients_slab.clone();
+        let dns_cache = dns_cache.clone();
 
         // Spawn a task to handle the connection
         tokio::spawn(async move {
@@ -285,6 +325,7 @@ pub async fn start_metrics_server(
                 let query_manager = query_manager.clone();
                 let udp_clients_slab = udp_clients_slab.clone();
                 let tcp_clients_slab = tcp_clients_slab.clone();
+                let dns_cache = dns_cache.clone();
                 async move {
                     handle_request(
                         req,
@@ -293,6 +334,7 @@ pub async fn start_metrics_server(
                         query_manager,
                         udp_clients_slab,
                         tcp_clients_slab,
+                        dns_cache,
                     )
                     .await
                 }
