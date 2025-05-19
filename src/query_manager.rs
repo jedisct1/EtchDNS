@@ -314,10 +314,7 @@ impl QueryManager {
                     let inflight_query = InflightQuery { task, slab_id };
                     in_flight_queries.insert(key.clone(), inflight_query);
 
-                    // Increment the active in-flight queries counter
-                    if let Some(stats) = &self.stats {
-                        stats.increment_active_inflight_queries().await;
-                    }
+                    // No need to track in-flight queries counter, as we directly access slab length instead
 
                     log::debug!(
                         "Added query to slab and in-flight map, slab size: {}, map size: {}",
@@ -352,10 +349,9 @@ impl QueryManager {
     }
 
     /// Get the number of in-flight queries
-    #[allow(dead_code)]
     pub async fn in_flight_count(&self) -> usize {
-        let in_flight_queries = self.in_flight_queries.lock().await;
-        in_flight_queries.len()
+        let query_slab = self.query_slab.lock().await;
+        query_slab.len()
     }
 
     /// Get the server timeout in seconds
@@ -646,10 +642,7 @@ impl QueryManager {
                 // Remove from the slab using the stored slab ID
                 match query_slab.remove(inflight_query.slab_id) {
                     Ok(_) => {
-                        // Decrement the active in-flight queries counter
-                        if let Some(stats) = &self_clone.stats {
-                            stats.decrement_active_inflight_queries().await;
-                        }
+                        // No need to track in-flight queries counter, as we directly access slab length instead
 
                         log::debug!(
                             "Successfully removed query from both map and slab, slab size: {}, map size: {}",

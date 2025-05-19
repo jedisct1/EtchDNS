@@ -40,7 +40,7 @@ fn format_timestamp(time: SystemTime) -> String {
 }
 
 /// Format metrics as text
-fn format_metrics(stats: &GlobalStats) -> String {
+fn format_metrics(stats: &GlobalStats, active_inflight_queries: usize) -> String {
     let mut output = String::new();
 
     // Global metrics
@@ -101,7 +101,7 @@ fn format_metrics(stats: &GlobalStats) -> String {
     output.push_str("# TYPE etchdns_active_inflight_queries gauge\n");
     output.push_str(&format!(
         "etchdns_active_inflight_queries {}\n",
-        stats.active_inflight_queries
+        active_inflight_queries
     ));
 
     output.push_str("# HELP etchdns_udp_receive_errors Total number of UDP receive errors\n");
@@ -184,6 +184,7 @@ async fn handle_request(
     req: Request<hyper::body::Incoming>,
     stats: Arc<SharedStats>,
     metrics_path: String,
+    query_manager: Option<Arc<crate::query_manager::QueryManager>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
 
@@ -191,8 +192,14 @@ async fn handle_request(
         // Get the current stats
         let current_stats = stats.get_stats().await;
 
+        // Get the number of in-flight queries from the query manager if available
+        let active_inflight_queries = match &query_manager {
+            Some(qm) => qm.in_flight_count().await,
+            None => 0, // Default to 0 if query manager isn't available
+        };
+
         // Format the metrics
-        let metrics_text = format_metrics(&current_stats);
+        let metrics_text = format_metrics(&current_stats, active_inflight_queries);
 
         // Return the metrics
         Ok(Response::new(Full::new(Bytes::from(metrics_text))))
@@ -210,6 +217,7 @@ pub async fn start_metrics_server(
     metrics_path: String,
     stats: Arc<SharedStats>,
     max_connections: usize,
+    query_manager: Option<Arc<crate::query_manager::QueryManager>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a TCP listener
     let listener = TcpListener::bind(addr).await?;
@@ -228,6 +236,7 @@ pub async fn start_metrics_server(
         let stats = stats.clone();
         let metrics_path = metrics_path.clone();
         let semaphore = semaphore.clone();
+        let query_manager = query_manager.clone();
 
         // Spawn a task to handle the connection
         tokio::spawn(async move {
@@ -244,7 +253,8 @@ pub async fn start_metrics_server(
             let service = hyper::service::service_fn(move |req| {
                 let stats = stats.clone();
                 let metrics_path = metrics_path.clone();
-                async move { handle_request(req, stats, metrics_path).await }
+                let query_manager = query_manager.clone();
+                async move { handle_request(req, stats, metrics_path, query_manager).await }
             });
 
             // Process the connection

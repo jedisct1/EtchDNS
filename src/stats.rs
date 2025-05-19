@@ -96,8 +96,6 @@ pub struct GlobalStats {
     pub active_udp_clients: u64,
     /// Current number of active TCP clients
     pub active_tcp_clients: u64,
-    /// Current number of active in-flight queries
-    pub active_inflight_queries: u64,
     /// Count of UDP receive errors
     pub udp_receive_errors: u64,
     /// Count of TCP accept errors
@@ -119,7 +117,6 @@ impl GlobalStats {
             cache_misses: 0,
             active_udp_clients: 0,
             active_tcp_clients: 0,
-            active_inflight_queries: 0,
             udp_receive_errors: 0,
             tcp_accept_errors: 0,
             resolver_stats: HashMap::new(),
@@ -194,18 +191,6 @@ impl GlobalStats {
     pub fn decrement_active_tcp_clients(&mut self) {
         if self.active_tcp_clients > 0 {
             self.active_tcp_clients -= 1;
-        }
-    }
-
-    /// Increment the active in-flight queries counter
-    pub fn increment_active_inflight_queries(&mut self) {
-        self.active_inflight_queries += 1;
-    }
-
-    /// Decrement the active in-flight queries counter
-    pub fn decrement_active_inflight_queries(&mut self) {
-        if self.active_inflight_queries > 0 {
-            self.active_inflight_queries -= 1;
         }
     }
 
@@ -318,18 +303,6 @@ impl SharedStats {
     pub async fn decrement_active_tcp_clients(&self) {
         let mut stats = self.inner.lock().await;
         stats.decrement_active_tcp_clients();
-    }
-
-    /// Increment the active in-flight queries counter
-    pub async fn increment_active_inflight_queries(&self) {
-        let mut stats = self.inner.lock().await;
-        stats.increment_active_inflight_queries();
-    }
-
-    /// Decrement the active in-flight queries counter
-    pub async fn decrement_active_inflight_queries(&self) {
-        let mut stats = self.inner.lock().await;
-        stats.decrement_active_inflight_queries();
     }
 
     /// Get a list of resolvers sorted by response time (fastest first)

@@ -2267,6 +2267,7 @@ async fn main() -> EtchDnsResult<()> {
         let metrics_path = config.metrics_path.clone();
         let stats = global_stats.clone();
         let max_metrics_connections = config.max_metrics_connections;
+        let metrics_query_manager = query_manager.clone();
 
         // Create a task for the metrics server
         let metrics_task = tokio::spawn(async move {
@@ -2277,6 +2278,7 @@ async fn main() -> EtchDnsResult<()> {
                 metrics_path,
                 stats,
                 max_metrics_connections,
+                Some(metrics_query_manager),
             )
             .await
             {
