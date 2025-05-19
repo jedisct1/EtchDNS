@@ -2264,6 +2264,7 @@ async fn main() -> EtchDnsResult<()> {
         let metrics_query_manager = query_manager.clone();
         let metrics_udp_clients_slab = udp_clients_slab.clone();
         let metrics_tcp_clients_slab = tcp_clients_slab.clone();
+        let metrics_dns_cache = dns_cache.clone();
 
         // Create a task for the metrics server
         let metrics_task = tokio::spawn(async move {
@@ -2277,7 +2278,7 @@ async fn main() -> EtchDnsResult<()> {
                 Some(metrics_query_manager),
                 Some(metrics_udp_clients_slab),
                 Some(metrics_tcp_clients_slab),
-                Some(dns_cache.clone()),
+                Some(metrics_dns_cache),
             )
             .await
             {

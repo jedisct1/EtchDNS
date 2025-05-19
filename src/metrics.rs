@@ -7,10 +7,19 @@ use log::info;
 use slabigator::Slab;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::process;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore};
+
+// Global server start time to calculate uptime
+static START_TIME: OnceLock<SystemTime> = OnceLock::new();
+
+/// Initialize the server start time if not already set
+fn init_start_time() -> SystemTime {
+    *START_TIME.get_or_init(SystemTime::now)
+}
 
 /// Format a timestamp as an ISO 8601 string
 fn format_timestamp(time: SystemTime) -> String {
@@ -50,6 +59,60 @@ fn format_metrics(
     cache_capacity: Option<usize>,
 ) -> String {
     let mut output = String::new();
+
+    // Initialize start time
+    let start_time = init_start_time();
+
+    // Process information
+    output.push_str("# HELP etchdns_info Server information\n");
+    output.push_str("# TYPE etchdns_info gauge\n");
+    output.push_str(&format!(
+        "etchdns_info{{version=\"{}\", build=\"{}\"}} 1\n",
+        env!("CARGO_PKG_VERSION", "unknown"),
+        option_env!("BUILD_ID").unwrap_or("dev"),
+    ));
+
+    // Uptime in seconds
+    let uptime_secs = match SystemTime::now().duration_since(start_time) {
+        Ok(duration) => duration.as_secs(),
+        Err(_) => 0,
+    };
+
+    output.push_str("# HELP etchdns_uptime_seconds Time since server startup in seconds\n");
+    output.push_str("# TYPE etchdns_uptime_seconds counter\n");
+    output.push_str(&format!("etchdns_uptime_seconds {}\n", uptime_secs));
+
+    // Get process ID
+    let pid = process::id();
+    output.push_str("# HELP etchdns_process_id Process ID of the server\n");
+    output.push_str("# TYPE etchdns_process_id gauge\n");
+    output.push_str(&format!("etchdns_process_id {}\n", pid));
+
+    // Add memory usage information if available
+    if let Ok(usage) = sys_info::mem_info() {
+        output.push_str("# HELP etchdns_system_memory_total_bytes Total system memory in bytes\n");
+        output.push_str("# TYPE etchdns_system_memory_total_bytes gauge\n");
+        output.push_str(&format!(
+            "etchdns_system_memory_total_bytes {}\n",
+            usage.total * 1024
+        ));
+
+        // Calculate used memory (total - free)
+        let used_memory = usage.total.saturating_sub(usage.free);
+        output.push_str("# HELP etchdns_system_memory_used_bytes Used system memory in bytes\n");
+        output.push_str("# TYPE etchdns_system_memory_used_bytes gauge\n");
+        output.push_str(&format!(
+            "etchdns_system_memory_used_bytes {}\n",
+            used_memory * 1024
+        ));
+
+        output.push_str("# HELP etchdns_system_memory_free_bytes Free system memory in bytes\n");
+        output.push_str("# TYPE etchdns_system_memory_free_bytes gauge\n");
+        output.push_str(&format!(
+            "etchdns_system_memory_free_bytes {}\n",
+            usage.free * 1024
+        ));
+    }
 
     // Global metrics
     output.push_str("# HELP etchdns_total_queries Total number of DNS queries processed\n");
@@ -114,6 +177,18 @@ fn format_metrics(
         output.push_str("# HELP etchdns_cache_hit_rate Cache hit rate (hits / total lookups)\n");
         output.push_str("# TYPE etchdns_cache_hit_rate gauge\n");
         output.push_str(&format!("etchdns_cache_hit_rate {:.4}\n", hit_rate));
+
+        // Cache utilization (size/capacity ratio)
+        if let (Some(size), Some(capacity)) = (cache_size, cache_capacity) {
+            if capacity > 0 {
+                output.push_str("# HELP etchdns_cache_utilization_ratio Cache utilization (size/capacity ratio)\n");
+                output.push_str("# TYPE etchdns_cache_utilization_ratio gauge\n");
+                output.push_str(&format!(
+                    "etchdns_cache_utilization_ratio {:.4}\n",
+                    size as f64 / capacity as f64
+                ));
+            }
+        }
     }
 
     output.push_str("# HELP etchdns_active_udp_clients Current number of active UDP clients\n");
@@ -152,6 +227,36 @@ fn format_metrics(
         "etchdns_tcp_accept_errors {}\n",
         stats.tcp_accept_errors
     ));
+
+    // Total active clients
+    let total_active_clients = active_udp_clients + active_tcp_clients;
+    output.push_str("# HELP etchdns_active_clients Total number of active clients (UDP + TCP)\n");
+    output.push_str("# TYPE etchdns_active_clients gauge\n");
+    output.push_str(&format!(
+        "etchdns_active_clients {}\n",
+        total_active_clients
+    ));
+
+    // Query rates
+    if uptime_secs > 0 {
+        output.push_str(
+            "# HELP etchdns_query_rate_per_second Average queries per second since startup\n",
+        );
+        output.push_str("# TYPE etchdns_query_rate_per_second gauge\n");
+        output.push_str(&format!(
+            "etchdns_query_rate_per_second {:.3}\n",
+            stats.total_queries as f64 / uptime_secs as f64
+        ));
+    }
+
+    // DNS error ratio
+    if stats.total_queries > 0 {
+        let error_ratio =
+            (stats.total_failed + stats.total_timeouts) as f64 / stats.total_queries as f64;
+        output.push_str("# HELP etchdns_error_ratio Ratio of failed queries to total queries\n");
+        output.push_str("# TYPE etchdns_error_ratio gauge\n");
+        output.push_str(&format!("etchdns_error_ratio {:.4}\n", error_ratio));
+    }
 
     // Per-resolver metrics
     output.push_str("# HELP etchdns_resolver_response_time_ms Average response time in milliseconds per resolver\n");
@@ -197,6 +302,18 @@ fn format_metrics(
             "etchdns_resolver_timeout_count{{resolver=\"{}\"}} {}\n",
             addr_str, stats.timeout_count
         ));
+
+        // Calculate resolver error ratio
+        let total_resolver_queries =
+            stats.success_count + stats.failure_count + stats.timeout_count;
+        if total_resolver_queries > 0 {
+            let resolver_error_ratio =
+                (stats.failure_count + stats.timeout_count) as f64 / total_resolver_queries as f64;
+            output.push_str(&format!(
+                "etchdns_resolver_error_ratio{{resolver=\"{}\"}} {:.4}\n",
+                addr_str, resolver_error_ratio
+            ));
+        }
 
         // Format the last_used timestamp
         let timestamp = format_timestamp(stats.last_used);
