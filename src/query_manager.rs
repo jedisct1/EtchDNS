@@ -23,6 +23,7 @@ pub struct DnsResponse {
 
 /// Manager for in-flight DNS queries
 #[derive(Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct QueryManager {
     /// Map of in-flight queries
     /// Key: DNSKey representing the query
@@ -129,17 +130,47 @@ impl QueryManager {
         Self {
             in_flight_queries: Arc::new(Mutex::new(HashMap::new())),
             query_slab: {
-                let slab = match Slab::with_capacity(max_inflight_queries) {
-                    Ok(slab) => slab,
-                    Err(e) => {
-                        error!("Failed to create query slab with requested capacity: {e}");
-                        // Fall back to a smaller size if allocation fails
-                        let smaller_capacity = std::cmp::max(100, max_inflight_queries / 2);
-                        warn!("Falling back to smaller query slab capacity: {smaller_capacity}");
-                        Slab::with_capacity(smaller_capacity)
-                            .expect("Critical error: Failed to allocate even minimal query slab")
+                // Try with requested capacity first
+                let slab = if let Ok(s) = Slab::with_capacity(max_inflight_queries) {
+                    s
+                } else {
+                    // Log the failure and try with half capacity
+                    error!(
+                        "Failed to create query slab with requested capacity: {max_inflight_queries}"
+                    );
+                    let smaller_capacity = std::cmp::max(100, max_inflight_queries / 2);
+                    warn!("Falling back to smaller query slab capacity: {smaller_capacity}");
+
+                    if let Ok(s) = Slab::with_capacity(smaller_capacity) {
+                        s
+                    } else {
+                        // Log the failure and try with minimal capacity
+                        error!(
+                            "Failed to create query slab with reduced capacity: {smaller_capacity}"
+                        );
+                        let minimal_capacity = 10; // Absolute minimum that should work
+                        warn!("Falling back to minimal query slab capacity: {minimal_capacity}");
+
+                        match Slab::with_capacity(minimal_capacity) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                // Last resort - try with capacity 1
+                                error!(
+                                    "Critical error: Failed to allocate even minimal query slab: {e}"
+                                );
+                                warn!(
+                                    "Attempting with capacity 1 - performance will be severely degraded"
+                                );
+
+                                Slab::with_capacity(1).unwrap_or_else(|e2| {
+                                    // This should never happen with capacity 1, but just in case
+                                    panic!("Fatal error: Cannot allocate even a trivial slab. System is likely out of memory: {e2}")
+                                })
+                            }
+                        }
                     }
                 };
+
                 Arc::new(Mutex::new(slab))
             },
             max_inflight_queries,
@@ -299,6 +330,8 @@ impl QueryManager {
 
         // Check in-flight queries and manage query limits
         // Use if-let instead of match to simplify the control flow
+        #[allow(clippy::collapsible_if)]
+        #[allow(clippy::needless_return)]
         if let Ok((mut in_flight_queries, mut query_slab)) =
             self.manage_in_flight_queries(&key).await
         {
@@ -464,6 +497,7 @@ impl QueryManager {
                         // The resolver completed within the timeout
                         match result {
                             Ok(response_data) => {
+                                #[allow(clippy::question_mark)]
                                 if crate::dns_parser::validate_dns_response(&response_data).is_err()
                                 {
                                     log::debug!(
@@ -471,6 +505,7 @@ impl QueryManager {
                                         key_clone.name
                                     );
                                     // Create an error response with empty data
+                                    #[allow(clippy::redundant_clone)]
                                     let response = DnsResponse {
                                         data: Vec::new(),
                                         error: Some("Invalid response packet".to_string()),
@@ -494,6 +529,7 @@ impl QueryManager {
                                     return response;
                                 }
                                 // Check if the response is a SERVFAIL and we should serve stale entries
+                                #[allow(clippy::nonminimal_bool)]
                                 if self_clone.serve_stale_grace_time > 0
                                     && crate::dns_parser::rcode(&response_data)
                                         == crate::dns_processor::DNS_RCODE_SERVFAIL
@@ -763,6 +799,7 @@ impl QueryManager {
             );
 
             // Find the oldest query to abort (the one at the back of the slab)
+            #[allow(clippy::single_match)]
             match query_slab.pop_back() {
                 Some(oldest_key) => {
                     // Get the task from the map and remove it

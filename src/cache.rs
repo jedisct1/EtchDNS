@@ -34,17 +34,40 @@ pub type SyncDnsCache = SyncSieveCache<DNSKey, CachedResponse>;
 
 /// Create a new thread-safe DNS cache with the given capacity
 pub fn create_dns_cache(capacity: usize) -> SyncDnsCache {
-    match SyncSieveCache::<DNSKey, CachedResponse>::new(capacity) {
+    // Try with requested capacity first
+    if let Ok(cache) = SyncSieveCache::<DNSKey, CachedResponse>::new(capacity) {
+        return cache;
+    }
+
+    // Log the failure and try with half capacity
+    error!("Failed to create DNS cache with requested capacity {capacity}");
+    let smaller_capacity = std::cmp::max(100, capacity / 2);
+    warn!("Falling back to smaller DNS cache capacity: {smaller_capacity}");
+
+    if let Ok(cache) = SyncSieveCache::<DNSKey, CachedResponse>::new(smaller_capacity) {
+        return cache;
+    }
+
+    // Log the failure and try with minimal capacity
+    error!("Failed to create DNS cache with reduced capacity {smaller_capacity}");
+    let minimal_capacity = 10; // Absolute minimum size that should work
+    warn!("Falling back to minimal DNS cache capacity: {minimal_capacity}");
+
+    // Last attempt with minimal capacity
+    match SyncSieveCache::<DNSKey, CachedResponse>::new(minimal_capacity) {
         Ok(cache) => cache,
         Err(e) => {
-            error!("Failed to create DNS cache with requested capacity {capacity}: {e}");
-            // Fall back to a smaller size if allocation fails
-            let smaller_capacity = std::cmp::max(100, capacity / 2);
-            warn!("Falling back to smaller DNS cache capacity: {smaller_capacity}");
+            // If this fails, create a stub implementation that doesn't actually cache
+            // This allows the program to continue running, albeit with degraded functionality
+            error!("Critical error: Failed to allocate even minimal DNS cache: {e}");
+            warn!("Running with a non-functional cache - performance will be degraded");
 
-            // Try with smaller capacity, if that fails we have a serious problem
-            SyncSieveCache::<DNSKey, CachedResponse>::new(smaller_capacity)
-                .expect("Critical error: Failed to allocate even minimal DNS cache")
+            // Create a placeholder cache with capacity 0
+            SyncSieveCache::<DNSKey, CachedResponse>::new(1)
+                .unwrap_or_else(|_| {
+                    // This should never happen with capacity 1, but just in case
+                    panic!("Fatal error: Cannot allocate even a trivial cache. System is likely out of memory.")
+                })
         }
     }
 }

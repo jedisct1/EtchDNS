@@ -2712,7 +2712,7 @@ mod tests {
     #[test]
     fn test_udp_listener_address_validation() {
         // Create some listener addresses
-        let listener_addrs = vec![
+        let listener_addrs = [
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 10000),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 10000),
         ];

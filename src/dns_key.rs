@@ -22,16 +22,18 @@ pub struct DNSKey {
 
 impl DNSKey {
     /// Creates a new DNSKey with the given parameters
-    pub fn new(name: String, qtype: u16, qclass: u16, dnssec: bool) -> Self {
+    ///
+    /// This function now returns a Result since normalize_name can fail
+    pub fn new(name: String, qtype: u16, qclass: u16, dnssec: bool) -> DnsResult<Self> {
         // Normalize the name (lowercase, no trailing dot)
-        let normalized_name = Self::normalize_name(&name);
+        let normalized_name = Self::normalize_name(&name)?;
 
-        DNSKey {
+        Ok(DNSKey {
             name: normalized_name,
             qtype,
             qclass,
             dnssec,
-        }
+        })
     }
 
     /// Creates a DNSKey from a DNS packet
@@ -56,35 +58,35 @@ impl DNSKey {
         // Check if DNSSEC is requested
         let dnssec = dns_parser::is_dnssec_requested(packet)?;
 
-        Ok(DNSKey::new(qname, qtype, qclass, dnssec))
+        // Now new() returns a Result, so we can just propagate it
+        DNSKey::new(qname, qtype, qclass, dnssec)
     }
 
-    /// Normalizes a domain name by converting it to lowercase and removing the trailing dot
-    ///
-    /// Also validates that the domain name is not too long.
-    /// This is a public method that can be called from outside the struct.
-    pub fn normalize_name(name: &str) -> String {
-        // Check if the domain name is too long
+    /// Normalizes a domain name for consistent caching and comparison
+    pub fn normalize_name(name: &str) -> DnsResult<String> {
         if name.len() > crate::dns_parser::DNS_MAX_HOSTNAME_SIZE {
-            // Log a warning but proceed with truncation
-            log::warn!(
-                "Domain name too long: {} bytes (max {}), truncating",
+            return Err(DnsError::InvalidDomainName(format!(
+                "Name too long: {} bytes (max {})",
                 name.len(),
                 crate::dns_parser::DNS_MAX_HOSTNAME_SIZE
-            );
+            )));
         }
-
-        let mut normalized = name.to_lowercase();
-        if normalized.ends_with('.') {
-            normalized.pop();
+        if name.is_empty() || name == "." {
+            return Ok(".".to_string());
         }
-
-        // Ensure the normalized name doesn't exceed the maximum length
-        if normalized.len() > crate::dns_parser::DNS_MAX_HOSTNAME_SIZE {
-            normalized.truncate(crate::dns_parser::DNS_MAX_HOSTNAME_SIZE);
+        if name.starts_with('.') {
+            return Err(DnsError::InvalidDomainName(
+                "Name cannot start with a dot".to_string(),
+            ));
         }
-
-        normalized
+        if name.contains("..") {
+            return Err(DnsError::InvalidDomainName(
+                "Name contains consecutive dots".to_string(),
+            ));
+        }
+        let name = name.trim_end_matches('.');
+        let normalized = name.to_lowercase();
+        Ok(normalized)
     }
 }
 

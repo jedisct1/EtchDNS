@@ -1,6 +1,6 @@
 use crate::stats::SharedStats;
 use log::debug;
-use rand::Rng;
+use rand::{Rng, rng};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -60,14 +60,14 @@ pub async fn select_upstream_server<'a>(
     match strategy {
         LoadBalancingStrategy::Random => {
             // Use a simple random index
-            let index = rand::rng().random_range(0..upstream_servers.len());
+            let index = rng().random_range(0..upstream_servers.len());
             Some(&upstream_servers[index])
         }
         LoadBalancingStrategy::Fastest => {
             // If we don't have stats, fall back to random
             if stats.is_none() {
                 debug!("No stats available for fastest strategy, falling back to random");
-                let index = rand::rng().random_range(0..upstream_servers.len());
+                let index = rng().random_range(0..upstream_servers.len());
                 return Some(&upstream_servers[index]);
             }
 
@@ -77,7 +77,7 @@ pub async fn select_upstream_server<'a>(
             // If we don't have any stats yet, fall back to random
             if resolvers_by_speed.is_empty() {
                 debug!("No resolver stats available yet, falling back to random");
-                let index = rand::rng().random_range(0..upstream_servers.len());
+                let index = rng().random_range(0..upstream_servers.len());
                 return Some(&upstream_servers[index]);
             }
 
@@ -92,7 +92,7 @@ pub async fn select_upstream_server<'a>(
 
             // If none of the resolvers in our stats are in upstream_servers, fall back to random
             debug!("No matching resolver found in stats, falling back to random");
-            let index = rand::rng().random_range(0..upstream_servers.len());
+            let index = rng().random_range(0..upstream_servers.len());
             Some(&upstream_servers[index])
         }
         LoadBalancingStrategy::PowerOfTwo => {
@@ -101,7 +101,7 @@ pub async fn select_upstream_server<'a>(
                 debug!(
                     "No stats available for p2 strategy or fewer than 2 servers, falling back to random"
                 );
-                let index = rand::rng().random_range(0..upstream_servers.len());
+                let index = rng().random_range(0..upstream_servers.len());
                 return Some(&upstream_servers[index]);
             }
 
@@ -113,7 +113,7 @@ pub async fn select_upstream_server<'a>(
             // If we don't have any stats yet, fall back to random
             if resolvers_by_speed.is_empty() {
                 debug!("No resolver stats available yet, falling back to random");
-                let index = rand::rng().random_range(0..upstream_servers.len());
+                let index = rng().random_range(0..upstream_servers.len());
                 return Some(&upstream_servers[index]);
             }
 
@@ -164,7 +164,7 @@ pub async fn select_upstream_server<'a>(
             // If we have no eligible servers, fall back to random selection from all servers
             if eligible_servers.is_empty() {
                 debug!("No eligible servers found, falling back to random selection");
-                let index = rand::rng().random_range(0..upstream_servers.len());
+                let index = rng().random_range(0..upstream_servers.len());
                 return Some(&upstream_servers[index]);
             }
 
@@ -178,7 +178,7 @@ pub async fn select_upstream_server<'a>(
             let global_stats = stats.get_stats().await;
 
             // We have at least two eligible servers, choose two randomly and pick the faster one
-            let mut rng = rand::rng();
+            let mut rng = rng();
 
             // To ensure we get a good distribution, we'll use a different approach
             // Shuffle the eligible servers and take the first two
@@ -455,7 +455,7 @@ mod tests {
         }
 
         // Verify that the fastest server is selected
-        assert!(selected_servers.contains_key(&"127.0.0.2:53".to_string()));
+        assert!(selected_servers.contains_key("127.0.0.2:53"));
     }
 
     #[tokio::test]

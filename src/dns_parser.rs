@@ -287,48 +287,72 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
 /// Returns the transaction ID from the DNS packet
 #[inline]
 pub fn tid(packet: &[u8]) -> u16 {
+    if packet.len() < 2 {
+        return 0; // Return 0 for malformed packets
+    }
     BigEndian::read_u16(&packet[0..2])
 }
 
 /// Returns the number of questions in the DNS packet
 #[inline]
 pub fn qdcount(packet: &[u8]) -> u16 {
+    if packet.len() < 6 {
+        return 0; // Return 0 for malformed packets
+    }
     BigEndian::read_u16(&packet[4..6])
 }
 
 /// Returns the number of answer records in the DNS packet
 #[inline]
 pub fn ancount(packet: &[u8]) -> u16 {
+    if packet.len() < 8 {
+        return 0; // Return 0 for malformed packets
+    }
     BigEndian::read_u16(&packet[6..8])
 }
 
 /// Returns the number of authority records in the DNS packet
 #[inline]
 pub fn nscount(packet: &[u8]) -> u16 {
+    if packet.len() < 10 {
+        return 0; // Return 0 for malformed packets
+    }
     BigEndian::read_u16(&packet[8..10])
 }
 
 /// Returns the number of additional records in the DNS packet
 #[inline]
 pub fn arcount(packet: &[u8]) -> u16 {
+    if packet.len() < DNS_PACKET_LEN_MIN {
+        return 0; // Return 0 for malformed packets
+    }
     BigEndian::read_u16(&packet[10..DNS_PACKET_LEN_MIN])
 }
 
 /// Returns the response code from the DNS packet
 #[inline]
 pub fn rcode(packet: &[u8]) -> u8 {
+    if packet.len() < 4 {
+        return 2; // Return SERVFAIL (2) for truncated packets
+    }
     packet[3] & 0x0F
 }
 
 /// Checks if the packet is a response
 #[inline]
 pub fn is_response(packet: &[u8]) -> bool {
+    if packet.len() < 4 {
+        return false; // Not a response if packet is too short
+    }
     (BigEndian::read_u16(&packet[2..4]) & DNS_FLAGS_QR) == DNS_FLAGS_QR
 }
 
 /// Returns the opcode from the DNS packet
 #[inline]
 pub fn opcode(packet: &[u8]) -> u8 {
+    if packet.len() < 3 {
+        return 0; // Return standard query (0) for malformed packets
+    }
     (packet[2] >> 3) & 0x0F
 }
 
@@ -342,6 +366,9 @@ pub fn is_standard_query(packet: &[u8]) -> bool {
 /// Checks if the packet has the TC (truncated) bit set
 #[inline]
 pub fn is_truncated(packet: &[u8]) -> bool {
+    if packet.len() < 4 {
+        return false; // Not truncated if packet is too short
+    }
     (BigEndian::read_u16(&packet[2..4]) & DNS_FLAGS_TC) == DNS_FLAGS_TC
 }
 
@@ -574,11 +601,16 @@ pub fn qname(packet: &[u8]) -> DnsResult<Vec<u8>> {
         }
         match packet[offset] as usize {
             label_len if label_len & 0xc0 == 0xc0 => {
+                // Check if we have enough bytes for the compression pointer
+                if offset + 1 >= packet_len {
+                    return Err(DnsError::PacketTooShort { offset });
+                }
+
                 // Compression pointer - not expected in the query name
+                let second_byte = packet[offset + 1] as usize;
                 return Err(DnsError::InvalidCompressionPointer {
                     offset,
-                    pointer: ((label_len & 0x3f) << 8)
-                        | (packet.get(offset + 1).copied().unwrap_or(0) as usize),
+                    pointer: ((label_len & 0x3f) << 8) | second_byte,
                     packet_size: packet_len,
                 });
             }
@@ -993,7 +1025,7 @@ pub fn add_edns_section(packet: &mut Vec<u8>, max_payload_size: u16) -> DnsResul
     // Increment the Additional Records count
     let arcount_offset = 10; // Offset of ARCOUNT in DNS header
     let mut arcount = BigEndian::read_u16(&packet[arcount_offset..arcount_offset + 2]);
-    if arcount >= 0xffff {
+    if arcount == 0xffff {
         return Err(DnsError::InvalidPacket(
             "Too many additional records".to_string(),
         ));
@@ -1689,32 +1721,16 @@ mod tests {
 
     // Helper function to create a simple DNS query packet
     fn create_test_query() -> Vec<u8> {
-        let mut packet = Vec::new();
-
-        // DNS Header (DNS_PACKET_LEN_MIN bytes)
-        // Transaction ID (2 bytes)
-        packet.push(0x12);
-        packet.push(0x34);
-
-        // Flags (2 bytes) - Standard query with RD bit set
-        packet.push(0x01);
-        packet.push(0x00);
-
-        // QDCOUNT (2 bytes) - 1 question
-        packet.push(0x00);
-        packet.push(0x01);
-
-        // ANCOUNT (2 bytes) - 0 answers
-        packet.push(0x00);
-        packet.push(0x00);
-
-        // NSCOUNT (2 bytes) - 0 authority records
-        packet.push(0x00);
-        packet.push(0x00);
-
-        // ARCOUNT (2 bytes) - 0 additional records
-        packet.push(0x00);
-        packet.push(0x00);
+        // Create DNS Header (DNS_PACKET_LEN_MIN bytes)
+        let mut packet = vec![
+            // Transaction ID (2 bytes)
+            0x12, 0x34, // Flags (2 bytes) - Standard query with RD bit set
+            0x01, 0x00, // QDCOUNT (2 bytes) - 1 question
+            0x00, 0x01, // ANCOUNT (2 bytes) - 0 answers
+            0x00, 0x00, // NSCOUNT (2 bytes) - 0 authority records
+            0x00, 0x00, // ARCOUNT (2 bytes) - 0 additional records
+            0x00, 0x00,
+        ];
 
         // Question section - example.com A record
         // example

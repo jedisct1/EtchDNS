@@ -120,10 +120,20 @@ impl RateLimiter {
                 total_queries: 1,
             };
 
-            // Add to clients map
-            state.clients.insert(client_ip, activity.clone());
+            // Add to clients map and get a mutable reference to the stored value
+            // Either we insert the new activity or we update an existing one
+            let client_entry = state
+                .clients
+                .entry(client_ip)
+                .or_insert_with(|| activity.clone());
 
-            state.clients.get_mut(&client_ip).unwrap()
+            // If an entry already exists, update it
+            if client_entry.last_active != now || client_entry.total_queries != 1 {
+                client_entry.last_active = now;
+                client_entry.total_queries += 1;
+            }
+
+            client_entry
         };
 
         // Remove timestamps that are outside the window

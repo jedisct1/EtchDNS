@@ -314,7 +314,29 @@ async fn handle_request(
 
                 // Use retain to keep only entries that don't match the specified name
                 // We need to normalize the name for comparison
-                let normalized_name = crate::dns_key::DNSKey::normalize_name(name);
+                let normalized_name = match crate::dns_key::DNSKey::normalize_name(name) {
+                    Ok(name) => name,
+                    Err(e) => {
+                        // If name normalization fails, return an error response
+                        error!("Failed to normalize domain name: {}", e);
+                        let response = ApiResponse {
+                            success: false,
+                            message: format!("Invalid domain name: {}", e),
+                        };
+                        let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                            error!("Failed to serialize API response: {}", e);
+                            r#"{"success":false,"message":"Internal server error"}"#.to_string()
+                        });
+
+                        let mut response = Response::new(Full::new(Bytes::from(json)));
+                        response.headers_mut().insert(
+                            hyper::header::CONTENT_TYPE,
+                            hyper::header::HeaderValue::from_static("application/json"),
+                        );
+                        *response.status_mut() = StatusCode::BAD_REQUEST;
+                        return Ok(response);
+                    }
+                };
                 cache.retain(|key, _| key.name != normalized_name);
 
                 // Get the new cache size
