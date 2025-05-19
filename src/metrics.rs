@@ -4,12 +4,13 @@ use http_body_util::Full;
 use hyper::{Request, Response, StatusCode, server::conn::http1};
 use hyper_util::rt::TokioIo;
 use log::info;
+use slabigator::Slab;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 
 /// Format a timestamp as an ISO 8601 string
 fn format_timestamp(time: SystemTime) -> String {
@@ -40,7 +41,12 @@ fn format_timestamp(time: SystemTime) -> String {
 }
 
 /// Format metrics as text
-fn format_metrics(stats: &GlobalStats, active_inflight_queries: usize) -> String {
+fn format_metrics(
+    stats: &GlobalStats,
+    active_inflight_queries: usize,
+    active_udp_clients: usize,
+    active_tcp_clients: usize,
+) -> String {
     let mut output = String::new();
 
     // Global metrics
@@ -85,14 +91,14 @@ fn format_metrics(stats: &GlobalStats, active_inflight_queries: usize) -> String
     output.push_str("# TYPE etchdns_active_udp_clients gauge\n");
     output.push_str(&format!(
         "etchdns_active_udp_clients {}\n",
-        stats.active_udp_clients
+        active_udp_clients
     ));
 
     output.push_str("# HELP etchdns_active_tcp_clients Current number of active TCP clients\n");
     output.push_str("# TYPE etchdns_active_tcp_clients gauge\n");
     output.push_str(&format!(
         "etchdns_active_tcp_clients {}\n",
-        stats.active_tcp_clients
+        active_tcp_clients
     ));
 
     output.push_str(
@@ -185,6 +191,8 @@ async fn handle_request(
     stats: Arc<SharedStats>,
     metrics_path: String,
     query_manager: Option<Arc<crate::query_manager::QueryManager>>,
+    udp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
+    tcp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
 
@@ -198,8 +206,25 @@ async fn handle_request(
             None => 0, // Default to 0 if query manager isn't available
         };
 
+        // Get the number of active UDP clients
+        let active_udp_clients = match &udp_clients_slab {
+            Some(slab) => slab.lock().await.len(),
+            None => 0, // Default to 0 if slab isn't available
+        };
+
+        // Get the number of active TCP clients
+        let active_tcp_clients = match &tcp_clients_slab {
+            Some(slab) => slab.lock().await.len(),
+            None => 0, // Default to 0 if slab isn't available
+        };
+
         // Format the metrics
-        let metrics_text = format_metrics(&current_stats, active_inflight_queries);
+        let metrics_text = format_metrics(
+            &current_stats,
+            active_inflight_queries,
+            active_udp_clients,
+            active_tcp_clients,
+        );
 
         // Return the metrics
         Ok(Response::new(Full::new(Bytes::from(metrics_text))))
@@ -218,6 +243,8 @@ pub async fn start_metrics_server(
     stats: Arc<SharedStats>,
     max_connections: usize,
     query_manager: Option<Arc<crate::query_manager::QueryManager>>,
+    udp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
+    tcp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a TCP listener
     let listener = TcpListener::bind(addr).await?;
@@ -237,6 +264,8 @@ pub async fn start_metrics_server(
         let metrics_path = metrics_path.clone();
         let semaphore = semaphore.clone();
         let query_manager = query_manager.clone();
+        let udp_clients_slab = udp_clients_slab.clone();
+        let tcp_clients_slab = tcp_clients_slab.clone();
 
         // Spawn a task to handle the connection
         tokio::spawn(async move {
@@ -254,7 +283,19 @@ pub async fn start_metrics_server(
                 let stats = stats.clone();
                 let metrics_path = metrics_path.clone();
                 let query_manager = query_manager.clone();
-                async move { handle_request(req, stats, metrics_path, query_manager).await }
+                let udp_clients_slab = udp_clients_slab.clone();
+                let tcp_clients_slab = tcp_clients_slab.clone();
+                async move {
+                    handle_request(
+                        req,
+                        stats,
+                        metrics_path,
+                        query_manager,
+                        udp_clients_slab,
+                        tcp_clients_slab,
+                    )
+                    .await
+                }
             });
 
             // Process the connection

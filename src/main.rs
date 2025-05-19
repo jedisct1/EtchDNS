@@ -1533,10 +1533,7 @@ async fn process_tcp_connection(
                                                 .push_front(cancel_tx)
                                                 .expect("Failed to add TCP client to slab");
 
-                                            // Increment the active TCP clients counter
-                                            if let Some(stats) = &client.query.stats {
-                                                stats.increment_active_tcp_clients().await;
-                                            }
+                                            // No need to manually track TCP clients, we now use slab length directly
 
                                             debug!(
                                                 "Added TCP client to slab with slot {}, slab size: {}",
@@ -1560,10 +1557,7 @@ async fn process_tcp_connection(
                                                     "Failed to remove TCP client from slab: {e}"
                                                 );
                                             } else {
-                                                // Decrement the active TCP clients counter
-                                                if let Some(stats) = &client.query.stats {
-                                                    stats.decrement_active_tcp_clients().await;
-                                                }
+                                                // No need to manually track TCP clients, we now use slab length directly
 
                                                 debug!(
                                                     "Removed TCP client from slab with slot {}, slab size: {}",
@@ -2268,6 +2262,8 @@ async fn main() -> EtchDnsResult<()> {
         let stats = global_stats.clone();
         let max_metrics_connections = config.max_metrics_connections;
         let metrics_query_manager = query_manager.clone();
+        let metrics_udp_clients_slab = udp_clients_slab.clone();
+        let metrics_tcp_clients_slab = tcp_clients_slab.clone();
 
         // Create a task for the metrics server
         let metrics_task = tokio::spawn(async move {
@@ -2279,6 +2275,8 @@ async fn main() -> EtchDnsResult<()> {
                 stats,
                 max_metrics_connections,
                 Some(metrics_query_manager),
+                Some(metrics_udp_clients_slab),
+                Some(metrics_tcp_clients_slab),
             )
             .await
             {
@@ -2504,10 +2502,7 @@ async fn main() -> EtchDnsResult<()> {
                                     .push_front(cancel_tx)
                                     .expect("Failed to add UDP client to slab");
 
-                                // Increment the active UDP clients counter
-                                if let Some(stats) = &client.query.stats {
-                                    stats.increment_active_udp_clients().await;
-                                }
+                                // No need to manually track UDP clients, we now use slab length directly
 
                                 debug!(
                                     "Added UDP client to slab with slot {}, slab size: {}",
@@ -2529,10 +2524,7 @@ async fn main() -> EtchDnsResult<()> {
                                 if let Err(e) = slab.remove(client_slot) {
                                     error!("Failed to remove UDP client from slab: {e}");
                                 } else {
-                                    // Decrement the active UDP clients counter
-                                    if let Some(stats) = &client.query.stats {
-                                        stats.decrement_active_udp_clients().await;
-                                    }
+                                    // No need to manually track UDP clients, we now use slab length directly
 
                                     debug!(
                                         "Removed UDP client from slab with slot {}, slab size: {}",
