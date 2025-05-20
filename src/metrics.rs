@@ -8,7 +8,7 @@ use slabigator::Slab;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore};
 
@@ -18,34 +18,6 @@ static START_TIME: OnceLock<SystemTime> = OnceLock::new();
 /// Initialize the server start time if not already set
 fn init_start_time() -> SystemTime {
     *START_TIME.get_or_init(SystemTime::now)
-}
-
-/// Format a timestamp as an ISO 8601 string
-fn format_timestamp(time: SystemTime) -> String {
-    match time.duration_since(UNIX_EPOCH) {
-        Ok(duration) => {
-            let secs = duration.as_secs();
-            let millis = duration.subsec_millis();
-
-            // Format as ISO 8601 (simplified)
-            let seconds = secs % 60;
-            let minutes = (secs / 60) % 60;
-            let hours = (secs / 3600) % 24;
-            let days = secs / 86400;
-
-            format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-                1970 + days / 365,     // Very simplified year calculation
-                (days % 365) / 30 + 1, // Very simplified month calculation
-                (days % 30) + 1,       // Very simplified day calculation
-                hours,
-                minutes,
-                seconds,
-                millis
-            )
-        }
-        Err(_) => "invalid_time".to_string(),
-    }
 }
 
 /// Format metrics as text
@@ -274,15 +246,13 @@ fn format_metrics(
         }
 
         // Format the last_used timestamp
-        let timestamp = format_timestamp(stats.last_used);
+        let last_used_ts = time_format::from_system_time(stats.last_used).unwrap_or_default();
         output.push_str(&format!(
             "etchdns_resolver_last_used_timestamp{{resolver=\"{}\", time=\"{}\"}} {}\n",
             addr_str,
-            timestamp,
-            match stats.last_used.duration_since(UNIX_EPOCH) {
-                Ok(duration) => duration.as_secs(),
-                Err(_) => 0,
-            }
+            time_format::format_iso8601_local(last_used_ts)
+                .unwrap_or_else(|_| "unknown".to_string()),
+            last_used_ts,
         ));
     }
 
