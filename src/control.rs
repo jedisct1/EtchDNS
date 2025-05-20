@@ -26,7 +26,6 @@ struct CacheStatusResponse {
     success: bool,
     size: usize,
     capacity: usize,
-    recommended_capacity: usize,
     hit_rate: f64,
     hits: u64,
     misses: u64,
@@ -98,15 +97,9 @@ async fn handle_request(
         // GET /cache - Return cache status
         (&Method::GET, "cache") => {
             if let Some(cache) = dns_cache {
-                // Get cache size, capacity, and recommended capacity
+                // Get cache size and capacity
                 let size = cache.len();
                 let capacity = cache.capacity();
-                // Use reasonable defaults for recommended capacity parameters:
-                // min_factor: 0.5 (never less than 50% of current)
-                // max_factor: 2.0 (never more than 200% of current)
-                // low_threshold: 0.3 (reduce if below 30% utilization)
-                // high_threshold: 0.7 (increase if above 70% utilization)
-                let recommended_capacity = cache.recommended_capacity(0.5, 2.0, 0.3, 0.7);
 
                 // Get cache hit/miss statistics from the stats system
                 let (hits, misses, hit_rate) = if let Some(stats_ref) = &stats {
@@ -137,7 +130,6 @@ async fn handle_request(
                     success: true,
                     size,
                     capacity,
-                    recommended_capacity,
                     hit_rate,
                     hits,
                     misses,
