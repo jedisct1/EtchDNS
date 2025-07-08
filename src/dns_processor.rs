@@ -13,6 +13,7 @@ pub const DNS_RCODE_SERVFAIL: u8 = 2; // Server failure
 pub const DNS_RCODE_NXDOMAIN: u8 = 3; // Non-existent domain
 pub const DNS_RCODE_NOTIMP: u8 = 4; // Not implemented
 pub const DNS_RCODE_REFUSED: u8 = 5; // Query refused
+pub const DNS_RCODE_BADVERS: u8 = 16; // Bad EDNS version
 
 /// Validates a DNS packet and creates a DNSKey from it
 pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DNSKey> {
@@ -67,6 +68,39 @@ pub fn create_dns_response(query_data: &[u8], rcode: u8, log_msg: Option<&str>) 
 #[allow(dead_code)]
 pub fn create_response_with_rcode(query_data: &[u8], rcode: u8) -> Vec<u8> {
     create_dns_response(query_data, rcode, None)
+}
+
+/// Creates a BADVERS response for unsupported EDNS version
+pub fn create_badvers_response(query_data: &[u8]) -> Vec<u8> {
+    // For BADVERS (RCODE 16), we need to handle extended RCODE
+    // The lower 4 bits go in the header (0), and the upper 8 bits go in OPT
+    let mut response = create_dns_response(query_data, DNS_RCODE_BADVERS, None);
+
+    // We need to manually create an OPT record with extended RCODE
+    // First, let's build the OPT record with extended RCODE = 1 (upper 8 bits of 16)
+    let opt_record: Vec<u8> = vec![
+        0, // Root domain name
+        0, 41, // Type = OPT
+        0x04, 0xd0, // Class = 1232 (UDP payload size)
+        1,    // Extended RCODE = 1 (upper 8 bits of RCODE 16)
+        0,    // EDNS Version = 0
+        0, 0, // Flags
+        0, 0, // RDLEN = 0
+    ];
+
+    // Update ARCOUNT
+    let arcount_offset = 10;
+    if response.len() > arcount_offset + 2 {
+        let arcount = dns_parser::arcount(&response);
+        dns_parser::set_arcount(&mut response, arcount + 1).unwrap_or_else(|e| {
+            log::error!("Failed to update ARCOUNT: {e}");
+        });
+
+        // Append OPT record
+        response.extend_from_slice(&opt_record);
+    }
+
+    response
 }
 
 /// Sets the appropriate DNS response flags based on authoritative_dns setting
@@ -126,7 +160,18 @@ pub trait DnsQueryProcessor {
         // Validate the packet and create a DNSKey
         let dns_key = match validate_and_create_key(query_data, client_addr) {
             Ok(key) => key,
-            Err(_) => return None, // Error already logged in validate_and_create_key
+            Err(e) => {
+                // Check if this is an unsupported EDNS version error
+                if let crate::errors::DnsError::UnsupportedEdnsVersion { version } = e {
+                    debug!(
+                        "Unsupported EDNS version {version} from {client_addr}, returning BADVERS"
+                    );
+                    let response = create_badvers_response(query_data);
+                    let client_query_id = crate::dns_parser::tid(query_data);
+                    return Some((response, client_query_id));
+                }
+                return None; // Error already logged in validate_and_create_key
+            }
         };
 
         // Get the client query ID once to avoid multiple calls
@@ -268,3 +313,105 @@ fn process_dns_response(
 
 /// Trait for processing DNS queries
 impl DnsQueryProcessor for () {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dns_parser;
+
+    fn create_test_query_with_edns_version(version: u8) -> Vec<u8> {
+        // Create a basic DNS query
+        let query = vec![
+            0x12, 0x34, // Transaction ID
+            0x01, 0x00, // Flags: standard query
+            0x00, 0x01, // QDCOUNT = 1
+            0x00, 0x00, // ANCOUNT = 0
+            0x00, 0x00, // NSCOUNT = 0
+            0x00, 0x01, // ARCOUNT = 1 (for OPT record)
+            // Question section
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', // "example"
+            0x03, b'c', b'o', b'm', // "com"
+            0x00, // Root label
+            0x00, 0x01, // QTYPE = A
+            0x00, 0x01, // QCLASS = IN
+            // Additional section - OPT record
+            0x00, // Root domain name
+            0x00, 0x29, // Type = OPT (41)
+            0x04, 0xd0,    // Class = 1232 (UDP payload size)
+            0x00,    // Extended RCODE
+            version, // EDNS Version
+            0x00, 0x00, // Flags
+            0x00, 0x00, // RDLEN = 0
+        ];
+        query
+    }
+
+    #[test]
+    fn test_create_badvers_response() {
+        // Create a query with EDNS version 1
+        let query = create_test_query_with_edns_version(1);
+
+        // Create BADVERS response
+        let response = create_badvers_response(&query);
+
+        // Check that it's a response
+        assert!(dns_parser::is_response(&response));
+
+        // For extended RCODE 16 (BADVERS), the header RCODE should be 0
+        // and the extended part (1) should be in the OPT record
+        assert_eq!(dns_parser::rcode(&response), 0);
+
+        // Check that response includes an OPT record
+        assert!(dns_parser::arcount(&response) > 0);
+
+        // Check that the OPT record has EDNS version 0
+        let edns_version = dns_parser::extract_edns_version(&response).unwrap();
+        assert_eq!(edns_version, Some(0));
+
+        // Verify the OPT record structure
+        // Find the OPT record - it should be at the end
+        let response_len = response.len();
+        assert!(response_len >= 11); // Should have at least the OPT record
+
+        // The OPT record starts 11 bytes from the end
+        let opt_start = response_len - 11;
+
+        // Verify OPT record structure
+        assert_eq!(response[opt_start], 0); // Root domain
+        assert_eq!(response[opt_start + 1], 0); // Type high byte
+        assert_eq!(response[opt_start + 2], 41); // Type low byte (OPT)
+        // Skip class (UDP payload size)
+        assert_eq!(response[opt_start + 5], 1); // Extended RCODE = 1
+        assert_eq!(response[opt_start + 6], 0); // EDNS version = 0
+    }
+
+    #[test]
+    fn test_unsupported_edns_version_validation() {
+        // Test that EDNS version 0 passes validation
+        let query_v0 = create_test_query_with_edns_version(0);
+        let result = validate_and_create_key(&query_v0, "127.0.0.1:12345");
+        assert!(result.is_ok());
+
+        // Test that EDNS version 1 fails validation
+        let query_v1 = create_test_query_with_edns_version(1);
+        let result = validate_and_create_key(&query_v1, "127.0.0.1:12345");
+        assert!(result.is_err());
+        match result {
+            Err(crate::errors::DnsError::UnsupportedEdnsVersion { version }) => {
+                assert_eq!(version, 1);
+            }
+            _ => panic!("Expected UnsupportedEdnsVersion error"),
+        }
+
+        // Test that EDNS version 2 fails validation
+        let query_v2 = create_test_query_with_edns_version(2);
+        let result = validate_and_create_key(&query_v2, "127.0.0.1:12345");
+        assert!(result.is_err());
+        match result {
+            Err(crate::errors::DnsError::UnsupportedEdnsVersion { version }) => {
+                assert_eq!(version, 2);
+            }
+            _ => panic!("Expected UnsupportedEdnsVersion error"),
+        }
+    }
+}

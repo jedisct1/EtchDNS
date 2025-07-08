@@ -281,6 +281,15 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
         }
     }
 
+    // Check EDNS version if OPT record is present
+    if let Some(edns_version) = extract_edns_version(packet)? {
+        if edns_version != 0 {
+            return Err(DnsError::UnsupportedEdnsVersion {
+                version: edns_version,
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -1268,6 +1277,54 @@ pub fn set_edns_max_payload_size(packet: &mut Vec<u8>, max_payload_size: u16) ->
     Ok(())
 }
 
+/// Extracts the EDNS version from a DNS packet
+///
+/// The EDNS version is stored in byte 3 of the TTL field in OPT records.
+/// Returns None if no OPT record is found, or Some(version) if found.
+pub fn extract_edns_version(packet: &[u8]) -> DnsResult<Option<u8>> {
+    let packet_len = packet.len();
+    if packet_len <= DNS_OFFSET_QUESTION {
+        return Ok(None);
+    }
+
+    // Skip the question section
+    let mut offset = skip_name(packet, DNS_OFFSET_QUESTION)?;
+    if packet_len - offset < 4 {
+        return Ok(None);
+    }
+    offset += 4; // Skip QTYPE and QCLASS
+
+    // Skip answer and authority sections
+    let (ancount, nscount, arcount) = (ancount(packet), nscount(packet), arcount(packet));
+    offset = traverse_rrs(packet, offset, ancount as usize + nscount as usize, |_| {
+        Ok(())
+    })?;
+
+    // Check additional records for OPT
+    let mut edns_version = None;
+
+    traverse_rrs(packet, offset, arcount as usize, |offset| {
+        // Check we have at least 8 bytes for TYPE, CLASS, TTL
+        if offset.checked_add(8).map_or(true, |sum| sum > packet_len) {
+            return Ok(()); // Skip malformed record
+        }
+
+        let rr_type = BigEndian::read_u16(&packet[offset..offset + 2]);
+        if rr_type == DNS_TYPE_OPT {
+            // The TTL field in OPT records contains:
+            // Byte 0: Extended RCODE
+            // Byte 1: EDNS Version
+            // Bytes 2-3: Flags
+            // The TTL is at offset + 4 (after TYPE and CLASS)
+            let ttl_bytes = &packet[offset + 4..offset + 8];
+            edns_version = Some(ttl_bytes[1]); // Byte 1 is the EDNS version
+        }
+        Ok(())
+    })?;
+
+    Ok(edns_version)
+}
+
 /// Validates that a DNS packet is a valid response
 pub fn validate_dns_response(packet: &[u8]) -> DnsResult<()> {
     // First, validate that it's a valid DNS packet
@@ -1419,15 +1476,20 @@ pub fn set_rcode(packet: &mut [u8], rcode: u8) -> DnsResult<()> {
         return Err(DnsError::PacketTooShort { offset: 0 });
     }
 
-    // RCODE is the lower 4 bits of byte 3
-    if rcode > 0x0F {
-        return Err(DnsError::InvalidPacket(format!("Invalid RCODE: {rcode}")));
+    // For standard RCODEs (0-15), set in the header
+    if rcode <= 0x0F {
+        // Clear the lower 4 bits and set the new RCODE
+        packet[3] = (packet[3] & 0xF0) | (rcode & 0x0F);
+        Ok(())
+    } else {
+        // For extended RCODEs (16-255), we need to handle them differently
+        // Set lower 4 bits to 0 in header
+        packet[3] = packet[3] & 0xF0;
+
+        // Extended RCODEs require an OPT record to hold the upper bits
+        // This should be handled by the caller when creating extended RCODE responses
+        Ok(())
     }
-
-    // Clear the lower 4 bits and set the new RCODE
-    packet[3] = (packet[3] & 0xF0) | (rcode & 0x0F);
-
-    Ok(())
 }
 
 /// Extracts the EDNS0 maximum datagram size from a DNS packet
@@ -2034,6 +2096,107 @@ mod tests {
             }
 
             assert!(!is_valid, "Label '{}' should be invalid", label);
+        }
+    }
+
+    #[test]
+    fn test_extract_edns_version() {
+        // Test query without OPT record
+        let query = create_test_query();
+        let version = extract_edns_version(&query).unwrap();
+        assert_eq!(version, None);
+
+        // Test query with EDNS version 0
+        let mut query_with_edns = query.clone();
+        add_edns_section(&mut query_with_edns, 1232).unwrap();
+        let version = extract_edns_version(&query_with_edns).unwrap();
+        assert_eq!(version, Some(0));
+
+        // Test query with EDNS version 1
+        // Create a custom OPT record with version 1
+        let mut query_with_edns_v1 = create_test_query();
+
+        // Manually add OPT record with version 1
+        // OPT record structure:
+        // - Name: 0 (root)
+        // - Type: 41 (OPT)
+        // - Class: UDP payload size
+        // - TTL: Extended RCODE (byte 0), Version (byte 1), Flags (bytes 2-3)
+        // - RDLEN: 0
+        // - RDATA: empty
+        let opt_record: Vec<u8> = vec![
+            0, // Root domain name
+            0, 41, // Type = OPT
+            0x04, 0xd0, // Class = 1232 (UDP payload size)
+            0,    // Extended RCODE
+            1,    // EDNS Version = 1
+            0, 0, // Flags
+            0, 0, // RDLEN = 0
+        ];
+
+        // Update ARCOUNT
+        let arcount_offset = 10;
+        assert!(
+            query_with_edns_v1.len() >= arcount_offset + 2,
+            "Packet too short for ARCOUNT"
+        );
+        let arcount = BigEndian::read_u16(&query_with_edns_v1[arcount_offset..arcount_offset + 2]);
+        BigEndian::write_u16(
+            &mut query_with_edns_v1[arcount_offset..arcount_offset + 2],
+            arcount + 1,
+        );
+
+        // Append OPT record
+        query_with_edns_v1.extend_from_slice(&opt_record);
+
+        let version = extract_edns_version(&query_with_edns_v1).unwrap();
+        assert_eq!(version, Some(1));
+    }
+
+    #[test]
+    fn test_validate_dns_packet_with_edns_version() {
+        // Test that EDNS version 0 is accepted
+        let mut query = create_test_query();
+        add_edns_section(&mut query, 1232).unwrap();
+        let result = validate_dns_packet(&query);
+        assert!(result.is_ok());
+
+        // Test that EDNS version 1 is rejected
+        let mut query_with_edns_v1 = create_test_query();
+
+        // Manually add OPT record with version 1
+        let opt_record: Vec<u8> = vec![
+            0, // Root domain name
+            0, 41, // Type = OPT
+            0x04, 0xd0, // Class = 1232 (UDP payload size)
+            0,    // Extended RCODE
+            1,    // EDNS Version = 1
+            0, 0, // Flags
+            0, 0, // RDLEN = 0
+        ];
+
+        // Update ARCOUNT
+        let arcount_offset = 10;
+        assert!(
+            query_with_edns_v1.len() >= arcount_offset + 2,
+            "Packet too short for ARCOUNT"
+        );
+        let arcount = BigEndian::read_u16(&query_with_edns_v1[arcount_offset..arcount_offset + 2]);
+        BigEndian::write_u16(
+            &mut query_with_edns_v1[arcount_offset..arcount_offset + 2],
+            arcount + 1,
+        );
+
+        // Append OPT record
+        query_with_edns_v1.extend_from_slice(&opt_record);
+
+        let result = validate_dns_packet(&query_with_edns_v1);
+        assert!(result.is_err());
+        match result {
+            Err(DnsError::UnsupportedEdnsVersion { version }) => {
+                assert_eq!(version, 1);
+            }
+            _ => panic!("Expected UnsupportedEdnsVersion error"),
         }
     }
 }

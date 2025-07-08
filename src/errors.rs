@@ -123,6 +123,10 @@ pub enum DnsError {
     #[allow(dead_code)]
     InvalidEdnsClientSubnet(String),
 
+    /// Error occurred due to unsupported EDNS version
+    #[error("Unsupported EDNS version: {version} (only version 0 is supported)")]
+    UnsupportedEdnsVersion { version: u8 },
+
     /// Error occurred while communicating with upstream DNS server
     #[error("Upstream DNS server error: {0}")]
     UpstreamError(String),

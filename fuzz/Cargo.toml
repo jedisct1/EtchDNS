@@ -94,3 +94,11 @@ path = "fuzz_targets/rate_limiter_is_allowed.rs"
 test = false
 doc = false
 bench = false
+
+# Fuzz target for dns_parser::extract_edns_version
+[[bin]]
+name = "extract_edns_version"
+path = "fuzz_targets/extract_edns_version.rs"
+test = false
+doc = false
+bench = false
