@@ -1381,6 +1381,9 @@ pub fn set_tid(packet: &mut [u8], tid: u16) -> DnsResult<()> {
 /// Returns the flags field from the DNS packet
 #[inline]
 pub fn flags(packet: &[u8]) -> u16 {
+    if packet.len() < 4 {
+        return 0; // Return 0 for malformed packets
+    }
     BigEndian::read_u16(&packet[2..4])
 }
 
