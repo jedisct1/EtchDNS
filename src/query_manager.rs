@@ -904,7 +904,7 @@ impl QueryManager {
                             .expires_at
                             .duration_since(std::time::SystemTime::now())
                         {
-                            Ok(remaining) => remaining.as_secs() as u32,
+                            Ok(remaining) => remaining.as_secs().min(u32::MAX as u64) as u32,
                             Err(_) => 0, // If expiration is in the past, use 0
                         };
 

@@ -110,7 +110,7 @@ impl RateLimiter {
         let activity = if let Some(activity) = state.clients.get_mut(&client_ip) {
             // Update existing client's activity record
             activity.last_active = now;
-            activity.total_queries += 1;
+            activity.total_queries = activity.total_queries.saturating_add(1);
             activity
         } else {
             // Create new client activity record
@@ -130,7 +130,7 @@ impl RateLimiter {
             // If an entry already exists, update it
             if client_entry.last_active != now || client_entry.total_queries != 1 {
                 client_entry.last_active = now;
-                client_entry.total_queries += 1;
+                client_entry.total_queries = client_entry.total_queries.saturating_add(1);
             }
 
             client_entry

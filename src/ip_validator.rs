@@ -371,6 +371,8 @@ impl IpRange {
         let ip_u32 = u32::from(base);
         let mask = if prefix_len == 0 {
             0
+        } else if prefix_len >= 32 {
+            !0u32 // All bits set
         } else {
             !0u32 << (32 - prefix_len)
         };
@@ -395,18 +397,22 @@ impl IpRange {
 
         // Apply netmask to each segment
         for i in 0..8 {
-            let segment_start_bit = i * 16;
+            let segment_start_bit = (i as usize).saturating_mul(16);
 
             if segment_start_bit >= prefix_len as usize {
                 // This entire segment is outside the prefix
                 cleaned_segments[i] = 0;
-            } else if segment_start_bit + 16 <= prefix_len as usize {
+            } else if segment_start_bit.saturating_add(16) <= prefix_len as usize {
                 // This entire segment is inside the prefix
                 cleaned_segments[i] = segments[i];
             } else {
                 // This segment is partially inside the prefix
-                let bits_in_prefix = prefix_len as usize - segment_start_bit;
-                let mask = !0u16 << (16 - bits_in_prefix);
+                let bits_in_prefix = (prefix_len as usize).saturating_sub(segment_start_bit);
+                let mask = if bits_in_prefix >= 16 {
+                    !0u16
+                } else {
+                    !0u16 << (16 - bits_in_prefix)
+                };
                 cleaned_segments[i] = segments[i] & mask;
             }
         }
@@ -464,6 +470,8 @@ impl IpRange {
                 let base_u32 = u32::from(*base);
                 let mask = if *prefix_len == 0 {
                     0
+                } else if *prefix_len >= 32 {
+                    !0u32 // All bits set
                 } else {
                     !0u32 << (32 - prefix_len)
                 };
@@ -491,7 +499,7 @@ impl IpRange {
 
                 // Compare each segment with the appropriate mask
                 for i in 0..8 {
-                    let segment_start_bit = i * 16;
+                    let segment_start_bit = (i as usize).saturating_mul(16);
 
                     if segment_start_bit >= *prefix_len as usize {
                         // We've reached the end of the prefix, so we're done
@@ -499,7 +507,7 @@ impl IpRange {
                     }
 
                     let bits_in_prefix =
-                        std::cmp::min(16, *prefix_len as usize - segment_start_bit);
+                        std::cmp::min(16, (*prefix_len as usize).saturating_sub(segment_start_bit));
                     if bits_in_prefix == 16 {
                         // This entire segment is inside the prefix
                         if ip_segments[i] != base_segments[i] {
@@ -507,7 +515,11 @@ impl IpRange {
                         }
                     } else {
                         // This segment is partially inside the prefix
-                        let mask = !0u16 << (16 - bits_in_prefix);
+                        let mask = if bits_in_prefix == 0 {
+                            0
+                        } else {
+                            !0u16 << (16 - bits_in_prefix)
+                        };
                         if (ip_segments[i] & mask) != (base_segments[i] & mask) {
                             return false;
                         }
@@ -741,5 +753,31 @@ mod tests {
             }
             _ => panic!("Expected IPv6 range"),
         }
+    }
+
+    #[test]
+    fn test_ipv4_cidr_edge_cases() {
+        // Test prefix length 0 (should match all IPs)
+        let range = IpRange::v4(Ipv4Addr::new(0, 0, 0, 0), 0);
+        assert!(range.contains_ipv4(&Ipv4Addr::new(192, 168, 1, 1)));
+        assert!(range.contains_ipv4(&Ipv4Addr::new(10, 0, 0, 1)));
+
+        // Test prefix length 32 (exact match only)
+        let range = IpRange::v4(Ipv4Addr::new(192, 168, 1, 1), 32);
+        assert!(range.contains_ipv4(&Ipv4Addr::new(192, 168, 1, 1)));
+        assert!(!range.contains_ipv4(&Ipv4Addr::new(192, 168, 1, 2)));
+    }
+
+    #[test]
+    fn test_ipv6_cidr_edge_cases() {
+        // Test prefix length 0 (should match all IPs)
+        let range = IpRange::v6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0);
+        assert!(range.contains_ipv6(&Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)));
+
+        // Test prefix length 128 (exact match only)
+        let addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let range = IpRange::v6(addr, 128);
+        assert!(range.contains_ipv6(&addr));
+        assert!(!range.contains_ipv6(&Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2)));
     }
 }

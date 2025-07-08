@@ -51,20 +51,20 @@ impl ResolverStats {
 
     /// Record a successful query
     pub fn record_success(&mut self, response_time: Duration) {
-        self.success_count += 1;
+        self.success_count = self.success_count.saturating_add(1);
         self.last_used = SystemTime::now();
         self.update_response_time(response_time);
     }
 
     /// Record a failed query
     pub fn record_failure(&mut self) {
-        self.failure_count += 1;
+        self.failure_count = self.failure_count.saturating_add(1);
         self.last_used = SystemTime::now();
     }
 
     /// Record a timed out query
     pub fn record_timeout(&mut self) {
-        self.timeout_count += 1;
+        self.timeout_count = self.timeout_count.saturating_add(1);
         self.last_used = SystemTime::now();
     }
 }
@@ -119,8 +119,8 @@ impl GlobalStats {
 
     /// Record a successful query for a resolver
     pub fn record_success(&mut self, resolver: SocketAddr, response_time: Duration) {
-        self.total_queries += 1;
-        self.total_successful += 1;
+        self.total_queries = self.total_queries.saturating_add(1);
+        self.total_successful = self.total_successful.saturating_add(1);
 
         let stats = self.resolver_stats.entry(resolver).or_default();
         stats.record_success(response_time);
@@ -128,8 +128,8 @@ impl GlobalStats {
 
     /// Record a failed query for a resolver
     pub fn record_failure(&mut self, resolver: SocketAddr) {
-        self.total_queries += 1;
-        self.total_failed += 1;
+        self.total_queries = self.total_queries.saturating_add(1);
+        self.total_failed = self.total_failed.saturating_add(1);
 
         let stats = self.resolver_stats.entry(resolver).or_default();
         stats.record_failure();
@@ -137,8 +137,8 @@ impl GlobalStats {
 
     /// Record a timed out query for a resolver
     pub fn record_timeout(&mut self, resolver: SocketAddr) {
-        self.total_queries += 1;
-        self.total_timeouts += 1;
+        self.total_queries = self.total_queries.saturating_add(1);
+        self.total_timeouts = self.total_timeouts.saturating_add(1);
 
         let stats = self.resolver_stats.entry(resolver).or_default();
         stats.record_timeout();
@@ -151,27 +151,27 @@ impl GlobalStats {
 
     /// Record a client query
     pub fn record_client_query(&mut self) {
-        self.client_queries += 1;
+        self.client_queries = self.client_queries.saturating_add(1);
     }
 
     /// Record a cache hit
     pub fn record_cache_hit(&mut self) {
-        self.cache_hits += 1;
+        self.cache_hits = self.cache_hits.saturating_add(1);
     }
 
     /// Record a cache miss
     pub fn record_cache_miss(&mut self) {
-        self.cache_misses += 1;
+        self.cache_misses = self.cache_misses.saturating_add(1);
     }
 
     /// Increment the UDP receive errors counter
     pub fn increment_udp_receive_errors(&mut self) {
-        self.udp_receive_errors += 1;
+        self.udp_receive_errors = self.udp_receive_errors.saturating_add(1);
     }
 
     /// Increment the TCP accept errors counter
     pub fn increment_tcp_accept_errors(&mut self) {
-        self.tcp_accept_errors += 1;
+        self.tcp_accept_errors = self.tcp_accept_errors.saturating_add(1);
     }
 
     /// Get a list of resolvers sorted by response time (fastest first)
@@ -273,5 +273,49 @@ impl SharedStats {
 impl Default for SharedStats {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stats_counter_saturation() {
+        let mut stats = GlobalStats::new();
+
+        // Set counters near maximum
+        stats.total_queries = u64::MAX - 1;
+        stats.cache_hits = u64::MAX - 1;
+
+        // These should saturate instead of overflowing
+        stats.record_client_query();
+        stats.record_cache_hit();
+
+        assert_eq!(stats.client_queries, 1);
+        assert_eq!(stats.cache_hits, u64::MAX);
+
+        // One more increment should still be at MAX
+        stats.record_cache_hit();
+        assert_eq!(stats.cache_hits, u64::MAX);
+    }
+
+    #[test]
+    fn test_resolver_stats_saturation() {
+        let mut stats = ResolverStats::new();
+
+        // Set counters near maximum
+        stats.success_count = u64::MAX - 1;
+        stats.failure_count = u64::MAX - 1;
+        stats.timeout_count = u64::MAX - 1;
+
+        // These should saturate instead of overflowing
+        stats.record_success(Duration::from_secs(1));
+        stats.record_failure();
+        stats.record_timeout();
+
+        assert_eq!(stats.success_count, u64::MAX);
+        assert_eq!(stats.failure_count, u64::MAX);
+        assert_eq!(stats.timeout_count, u64::MAX);
     }
 }

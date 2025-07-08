@@ -279,7 +279,9 @@ fn add_cache_headers(response: &mut Response<Full<Bytes>>, dns_data: &[u8]) {
                 .unwrap_or_default()
                 .as_secs(),
         );
-    let expiry_time = now + std::time::Duration::from_secs(cache_ttl as u64);
+    let expiry_time = now
+        .checked_add(std::time::Duration::from_secs(cache_ttl as u64))
+        .unwrap_or(now + std::time::Duration::from_secs(86400)); // Default to 24 hours if overflow
     let expiry_http_date = httpdate::fmt_http_date(expiry_time);
     if let Ok(value) = header::HeaderValue::from_str(&expiry_http_date) {
         response.headers_mut().insert(header::EXPIRES, value);

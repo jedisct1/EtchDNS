@@ -127,8 +127,14 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
         }
 
         // Read QTYPE and QCLASS
-        let _qtype = BigEndian::read_u16(&packet[offset..offset + 2]);
-        let qclass = BigEndian::read_u16(&packet[offset + 2..offset + 4]);
+        let qtype_end = offset.checked_add(2).ok_or_else(|| {
+            DnsError::InvalidPacket("Integer overflow calculating QTYPE offset".to_string())
+        })?;
+        let qclass_end = offset.checked_add(4).ok_or_else(|| {
+            DnsError::InvalidPacket("Integer overflow calculating QCLASS offset".to_string())
+        })?;
+        let _qtype = BigEndian::read_u16(&packet[offset..qtype_end]);
+        let qclass = BigEndian::read_u16(&packet[qtype_end..qclass_end]);
 
         // Validate QCLASS (typically IN=1 or ANY=255)
         if qclass != DNS_CLASS_IN && qclass != DNS_CLASS_ANY {
@@ -188,7 +194,9 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
             }
         }
 
-        offset += 4;
+        offset = offset.checked_add(4).ok_or_else(|| {
+            DnsError::InvalidPacket("Integer overflow advancing past QTYPE/QCLASS".to_string())
+        })?;
     }
 
     // Try to validate the answer, authority, and additional sections
@@ -397,10 +405,12 @@ pub fn is_dnssec_requested(packet: &[u8]) -> DnsResult<bool> {
 
     // Skip the question section
     let mut offset = skip_name(packet, DNS_OFFSET_QUESTION)?;
-    if packet_len - offset < 4 {
+    if packet_len.saturating_sub(offset) < 4 {
         return Err(DnsError::PacketTooShort { offset: 0 });
     }
-    offset += 4; // Skip QTYPE and QCLASS
+    offset = offset.checked_add(4).ok_or_else(|| {
+        DnsError::InvalidPacket("Integer overflow skipping QTYPE/QCLASS".to_string())
+    })?; // Skip QTYPE and QCLASS
 
     // Skip answer and authority sections
     let (ancount, nscount, arcount) = (ancount(packet), nscount(packet), arcount(packet));
@@ -633,11 +643,15 @@ pub fn qname(packet: &[u8]) -> DnsResult<Vec<u8>> {
                 if label_len >= 0x40 {
                     return Err(DnsError::LabelTooLong { length: label_len });
                 }
-                if packet_len - offset <= 1 {
+                if packet_len.saturating_sub(offset) <= 1 {
                     return Err(DnsError::PacketTooShort { offset: 0 });
                 }
-                offset += 1;
-                if packet_len - offset < label_len {
+                offset = offset.checked_add(1).ok_or_else(|| {
+                    DnsError::InvalidPacket(
+                        "Integer overflow advancing past label length byte".to_string(),
+                    )
+                })?;
+                if packet_len.saturating_sub(offset) < label_len {
                     return Err(DnsError::PacketTooShort { offset: 0 });
                 }
 
@@ -652,8 +666,11 @@ pub fn qname(packet: &[u8]) -> DnsResult<Vec<u8>> {
                     });
                 }
 
-                qname.extend_from_slice(&packet[offset..offset + label_len]);
-                offset += label_len;
+                let label_end = offset.checked_add(label_len).ok_or_else(|| {
+                    DnsError::InvalidPacket("Integer overflow calculating label end".to_string())
+                })?;
+                qname.extend_from_slice(&packet[offset..label_end]);
+                offset = label_end;
             }
         }
     }
@@ -2310,4 +2327,69 @@ pub fn extract_edns_client_subnet(packet: &[u8]) -> DnsResult<Option<EdnsClientS
     })?;
 
     Ok(ecs_info)
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::*;
+    use crate::errors::DnsError;
+
+    #[test]
+    fn test_offset_overflow_in_qname() {
+        // Create a packet where label length calculation would overflow
+        let mut packet = vec![0u8; DNS_HEADER_SIZE + 10];
+
+        // Set QDCOUNT to 1
+        packet[4] = 0;
+        packet[5] = 1;
+
+        // Create a label with length 64 (invalid - must be < 64)
+        packet[DNS_HEADER_SIZE] = 64;
+
+        // The qname function should handle this gracefully
+        let result = qname(&packet);
+        assert!(matches!(result, Err(DnsError::LabelTooLong { .. })));
+    }
+
+    #[test]
+    fn test_offset_overflow_in_skip_name() {
+        // Test that our overflow protection works
+        // Create a small packet
+        let mut packet = vec![0u8; 20];
+
+        // Set QDCOUNT to 1
+        packet[4] = 0;
+        packet[5] = 1;
+
+        // Create a name with large label count that would cause offset overflow
+        packet[12] = 63; // Max valid label length
+        // Not enough space in packet for this label
+
+        let result = skip_name(&packet, 12);
+        assert!(
+            result.is_err(),
+            "Expected error when label extends beyond packet"
+        );
+    }
+
+    #[test]
+    fn test_dns_packet_offset_boundary() {
+        // Test packet where offset calculations approach usize::MAX
+        // Create a valid minimal question with proper size
+        let mut packet = vec![0u8; DNS_HEADER_SIZE + 5]; // Need 5 bytes for minimal question
+
+        // Set QDCOUNT to 1
+        packet[4] = 0;
+        packet[5] = 1;
+
+        packet[DNS_HEADER_SIZE] = 0; // Root label (1 byte)
+        packet[DNS_HEADER_SIZE + 1] = 0; // QTYPE high byte
+        packet[DNS_HEADER_SIZE + 2] = 1; // QTYPE low byte (A record)
+        packet[DNS_HEADER_SIZE + 3] = 0; // QCLASS high byte
+        packet[DNS_HEADER_SIZE + 4] = 1; // QCLASS low byte (IN)
+
+        // This should succeed without overflow
+        let result = validate_dns_packet(&packet);
+        assert!(result.is_ok());
+    }
 }

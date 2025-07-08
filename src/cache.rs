@@ -18,7 +18,9 @@ pub struct CachedResponse {
 impl CachedResponse {
     /// Create a new cached response with the given data and TTL
     pub fn new(data: Vec<u8>, ttl: Duration) -> Self {
-        let expires_at = SystemTime::now() + ttl;
+        let expires_at = SystemTime::now()
+            .checked_add(ttl)
+            .unwrap_or_else(|| SystemTime::now() + Duration::from_secs(u64::MAX));
 
         Self { data, expires_at }
     }
@@ -69,5 +71,35 @@ pub fn create_dns_cache(capacity: usize) -> SyncDnsCache {
                     panic!("Fatal error: Cannot allocate even a trivial cache. System is likely out of memory.")
                 })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn test_large_ttl_conversion() {
+        // Test creating a cached response with very large duration
+        let data = vec![1, 2, 3];
+        let ttl = Duration::from_secs(365 * 24 * 60 * 60); // 1 year
+
+        // Should not panic
+        let cached = CachedResponse::new(data, ttl);
+
+        // The expires_at should be set to a valid time
+        assert!(cached.expires_at > SystemTime::now());
+    }
+
+    #[test]
+    fn test_cache_expiry_check() {
+        // Test with zero TTL
+        let data = vec![1, 2, 3];
+        let cached = CachedResponse::new(data, Duration::from_secs(0));
+
+        // Should immediately be expired
+        std::thread::sleep(Duration::from_millis(1));
+        assert!(cached.is_expired());
     }
 }
