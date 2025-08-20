@@ -1107,72 +1107,54 @@ async fn process_response(
 ) -> EtchDnsResult<Vec<u8>> {
     // Verify the transaction ID in the response
     let response_tid = dns_parser::tid(response_data);
-    if response_tid != expected_tid {
+    let should_fallback_to_tcp = if response_tid != expected_tid {
         if spoof_protection {
-            // With spoof protection enabled, fallback to TCP when we get a wrong transaction ID over UDP
-            // This mitigates DNS spoofing attacks by using the secure TCP transport
-            // Note: This protection only applies to UDP queries as TCP is inherently secure against spoofing
+            // With spoof protection enabled, treat wrong transaction ID as truncated
+            // This will trigger TCP fallback using the existing mechanism
             warn!(
-                "Potential DNS spoofing detected over UDP from {}: expected transaction ID {}, got {}. Falling back to TCP.",
+                "Potential DNS spoofing detected over UDP from {}: expected transaction ID {}, got {}. Will retry with TCP.",
                 upstream_addr, expected_tid, response_tid
             );
-
-            // Fallback to TCP for a secure response
-            // We need to recover the original query from the response to retry with TCP
-            match dns_parser::recover_question_from_response(query_data) {
-                Ok(recovered_query) => {
-                    match retry_with_tcp(&recovered_query, expected_tid, upstream_addr).await {
-                        Ok(tcp_response) => {
-                            info!(
-                                "Successfully recovered from potential spoofing attempt using TCP fallback"
-                            );
-                            return Ok(tcp_response);
-                        }
-                        Err(e) => {
-                            error!("TCP fallback failed after potential spoofing attempt: {e}");
-                            // Return SERVFAIL as last resort if TCP fallback also fails
-                            let servfail_response = dns_processor::create_dns_response(
-                                query_data,
-                                dns_processor::DNS_RCODE_SERVFAIL,
-                                Some("Both UDP (spoofing detected) and TCP fallback failed"),
-                            );
-                            return Ok(servfail_response);
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to recover query for TCP fallback: {e}");
-                    // Return SERVFAIL if we can't recover the query
-                    let servfail_response = dns_processor::create_dns_response(
-                        query_data,
-                        dns_processor::DNS_RCODE_SERVFAIL,
-                        Some("Failed to recover query after potential spoofing attempt"),
-                    );
-                    return Ok(servfail_response);
-                }
-            }
+            true // Force TCP fallback
         } else {
             debug!("Transaction ID mismatch: expected {expected_tid}, got {response_tid}");
             return Err(
                 DnsError::UpstreamError("Transaction ID mismatch in response".to_string()).into(),
             );
         }
+    } else {
+        debug!("Verified response transaction ID: {response_tid}");
+        false
+    };
+
+    // If spoof protection triggered TCP fallback, use the original query
+    // Otherwise validate the response
+    if !should_fallback_to_tcp {
+        // Validate that the response is a valid DNS response
+        if let Err(e) = dns_parser::validate_dns_response(response_data) {
+            debug!("Invalid DNS response: {e}");
+            return Err(DnsError::UpstreamError(format!("Invalid DNS response: {e}")).into());
+        }
     }
 
-    debug!("Verified response transaction ID: {response_tid}");
+    // Check if the response is truncated (TC bit set) or if we need TCP fallback for spoof protection
+    if should_fallback_to_tcp || dns_parser::is_truncated(response_data) {
+        let reason = if should_fallback_to_tcp {
+            "potential spoofing detected"
+        } else {
+            "TC bit set"
+        };
+        debug!("Retrying with TCP ({reason})");
 
-    // Validate that the response is a valid DNS response
-    if let Err(e) = dns_parser::validate_dns_response(response_data) {
-        debug!("Invalid DNS response: {e}");
-        return Err(DnsError::UpstreamError(format!("Invalid DNS response: {e}")).into());
-    }
-
-    // Check if the response is truncated (TC bit set)
-    if dns_parser::is_truncated(response_data) {
-        debug!("Received truncated DNS response (TC bit set), retrying with TCP");
+        // For spoof protection, use the original query; for truncation, recover from response
+        let tcp_query = if should_fallback_to_tcp {
+            query_data
+        } else {
+            response_data
+        };
 
         // Retry the query using TCP
-        match retry_with_tcp(response_data, expected_tid, upstream_addr).await {
+        match retry_with_tcp(tcp_query, expected_tid, upstream_addr).await {
             Ok(tcp_response) => {
                 debug!("Successfully received complete response via TCP");
                 return Ok(tcp_response);
