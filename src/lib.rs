@@ -52,6 +52,8 @@ pub struct ClientQuery {
     pub ecs_prefix_v4: u8,
     /// IPv6 prefix length for EDNS-client-subnet
     pub ecs_prefix_v6: u8,
+    /// Whether spoof protection is enabled
+    pub spoof_protection: bool,
 }
 
 impl ClientQuery {
@@ -80,8 +82,9 @@ impl ClientQuery {
             load_balancing_strategy,
             client_ip: None,
             enable_ecs: false,
-            ecs_prefix_v4: 24, // Default IPv4 prefix length
-            ecs_prefix_v6: 56, // Default IPv6 prefix length
+            ecs_prefix_v4: 24,      // Default IPv4 prefix length
+            ecs_prefix_v6: 56,      // Default IPv6 prefix length
+            spoof_protection: true, // Default to enabled for security
         }
     }
 
@@ -97,6 +100,7 @@ impl ClientQuery {
         enable_ecs: bool,
         ecs_prefix_v4: u8,
         ecs_prefix_v6: u8,
+        spoof_protection: bool,
     ) -> Self {
         // Extract the EDNS0 maximum datagram size from the query, if present
         let max_udp_response_size = match dns_parser::extract_edns0_max_size(&data) {
@@ -116,6 +120,7 @@ impl ClientQuery {
             enable_ecs,
             ecs_prefix_v4,
             ecs_prefix_v6,
+            spoof_protection,
         }
     }
 

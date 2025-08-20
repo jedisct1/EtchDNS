@@ -269,6 +269,13 @@ ecs_prefix_v6 = 56
 # Security Configuration
 #------------------------------------------------------------------------------
 
+# Enable DNS spoofing protection for UDP queries
+# If true, falls back to TCP when receiving UDP responses with wrong transaction IDs
+# This helps mitigate DNS cache poisoning attacks by using the secure TCP transport
+# SERVFAIL is only returned if the TCP fallback also fails
+# Default: true
+spoof_protection = true
+
 # Enable strict IP validation
 # If true, applies comprehensive validation to client IP addresses
 # This includes checking for private networks, loopback, etc.

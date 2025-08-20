@@ -91,6 +91,9 @@ pub struct QueryManager {
 
     /// IPv6 prefix length for EDNS-client-subnet
     ecs_prefix_v6: u8,
+
+    /// Enable protection against DNS spoofing attacks
+    spoof_protection: bool,
 }
 
 /// Represents a task handling a DNS query
@@ -126,6 +129,7 @@ impl QueryManager {
         enable_ecs: bool,
         ecs_prefix_v4: u8,
         ecs_prefix_v6: u8,
+        spoof_protection: bool,
     ) -> Self {
         Self {
             in_flight_queries: Arc::new(Mutex::new(HashMap::new())),
@@ -191,6 +195,7 @@ impl QueryManager {
             enable_ecs,
             ecs_prefix_v4,
             ecs_prefix_v6,
+            spoof_protection,
         }
     }
 
@@ -1166,5 +1171,10 @@ impl QueryManager {
     /// Get the IPv6 prefix length for EDNS-client-subnet
     pub fn get_ecs_prefix_v6(&self) -> u8 {
         self.ecs_prefix_v6
+    }
+
+    /// Get whether spoof protection is enabled
+    pub fn get_spoof_protection(&self) -> bool {
+        self.spoof_protection
     }
 }

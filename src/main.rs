@@ -319,6 +319,13 @@ struct Config {
     /// Recommended values: 56 (send first 56 bits, hiding the last 72 bits)
     #[serde(default = "default_ecs_prefix_v6")]
     ecs_prefix_v6: u8,
+
+    /// Enable protection against DNS spoofing attacks by falling back to TCP
+    /// when receiving UDP responses with wrong transaction IDs
+    /// This helps mitigate DNS cache poisoning attempts by using secure TCP transport
+    /// Note: Only applies to UDP queries; TCP is inherently secure against spoofing
+    #[serde(default = "default_spoof_protection")]
+    spoof_protection: bool,
 }
 
 // Default values for configuration
@@ -492,6 +499,10 @@ fn default_ecs_prefix_v4() -> u8 {
 
 fn default_ecs_prefix_v6() -> u8 {
     56 // Send first 56 bits of IPv6 address (hide last 72 bits)
+}
+
+fn default_spoof_protection() -> bool {
+    true // Enable spoof protection by default for security
 }
 
 fn default_block_private_ip_ranges() -> bool {
@@ -740,6 +751,8 @@ struct ClientQuery {
     ecs_prefix_v4: u8,
     /// IPv6 prefix length for EDNS-client-subnet
     ecs_prefix_v6: u8,
+    /// Whether spoof protection is enabled
+    spoof_protection: bool,
 }
 
 impl ClientQuery {
@@ -770,6 +783,7 @@ impl ClientQuery {
             enable_ecs: false, // Default to disabled, will be set by the caller
             ecs_prefix_v4: default_ecs_prefix_v4(),
             ecs_prefix_v6: default_ecs_prefix_v6(),
+            spoof_protection: true, // Default to enabled for security
         }
     }
 
@@ -785,6 +799,7 @@ impl ClientQuery {
         enable_ecs: bool,
         ecs_prefix_v4: u8,
         ecs_prefix_v6: u8,
+        spoof_protection: bool,
     ) -> Self {
         // Extract the EDNS0 maximum datagram size from the query, if present
         let max_udp_response_size = match dns_parser::extract_edns0_max_size(&data) {
@@ -804,6 +819,7 @@ impl ClientQuery {
             enable_ecs,
             ecs_prefix_v4,
             ecs_prefix_v6,
+            spoof_protection,
         }
     }
 
@@ -941,7 +957,14 @@ impl ClientQuery {
                 }
 
                 // Process the response
-                return process_response(&buf[..len], random_tid, upstream_addr).await;
+                return process_response(
+                    &buf[..len],
+                    random_tid,
+                    upstream_addr,
+                    self.spoof_protection,
+                    &query_data,
+                )
+                .await;
             }
             Ok(Err(e)) => {
                 // Socket error
@@ -1005,7 +1028,14 @@ impl ClientQuery {
                         );
 
                         // Process the response
-                        process_response(&buf[..len], random_tid, upstream_addr).await
+                        process_response(
+                            &buf[..len],
+                            random_tid,
+                            upstream_addr,
+                            self.spoof_protection,
+                            &query_data,
+                        )
+                        .await
                     }
                     Ok(Err(e)) => {
                         // Socket error on retry
@@ -1072,14 +1102,61 @@ async fn process_response(
     response_data: &[u8],
     expected_tid: u16,
     upstream_addr: SocketAddr,
+    spoof_protection: bool,
+    query_data: &[u8],
 ) -> EtchDnsResult<Vec<u8>> {
     // Verify the transaction ID in the response
     let response_tid = dns_parser::tid(response_data);
     if response_tid != expected_tid {
-        debug!("Transaction ID mismatch: expected {expected_tid}, got {response_tid}");
-        return Err(
-            DnsError::UpstreamError("Transaction ID mismatch in response".to_string()).into(),
-        );
+        if spoof_protection {
+            // With spoof protection enabled, fallback to TCP when we get a wrong transaction ID over UDP
+            // This mitigates DNS spoofing attacks by using the secure TCP transport
+            // Note: This protection only applies to UDP queries as TCP is inherently secure against spoofing
+            warn!(
+                "Potential DNS spoofing detected over UDP from {}: expected transaction ID {}, got {}. Falling back to TCP.",
+                upstream_addr, expected_tid, response_tid
+            );
+
+            // Fallback to TCP for a secure response
+            // We need to recover the original query from the response to retry with TCP
+            match dns_parser::recover_question_from_response(query_data) {
+                Ok(recovered_query) => {
+                    match retry_with_tcp(&recovered_query, expected_tid, upstream_addr).await {
+                        Ok(tcp_response) => {
+                            info!(
+                                "Successfully recovered from potential spoofing attempt using TCP fallback"
+                            );
+                            return Ok(tcp_response);
+                        }
+                        Err(e) => {
+                            error!("TCP fallback failed after potential spoofing attempt: {e}");
+                            // Return SERVFAIL as last resort if TCP fallback also fails
+                            let servfail_response = dns_processor::create_dns_response(
+                                query_data,
+                                dns_processor::DNS_RCODE_SERVFAIL,
+                                Some("Both UDP (spoofing detected) and TCP fallback failed"),
+                            );
+                            return Ok(servfail_response);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to recover query for TCP fallback: {e}");
+                    // Return SERVFAIL if we can't recover the query
+                    let servfail_response = dns_processor::create_dns_response(
+                        query_data,
+                        dns_processor::DNS_RCODE_SERVFAIL,
+                        Some("Failed to recover query after potential spoofing attempt"),
+                    );
+                    return Ok(servfail_response);
+                }
+            }
+        } else {
+            debug!("Transaction ID mismatch: expected {expected_tid}, got {response_tid}");
+            return Err(
+                DnsError::UpstreamError("Transaction ID mismatch in response".to_string()).into(),
+            );
+        }
     }
 
     debug!("Verified response transaction ID: {response_tid}");
@@ -1120,7 +1197,7 @@ async fn retry_with_tcp(
     upstream_addr: SocketAddr,
 ) -> EtchDnsResult<Vec<u8>> {
     // Recover a proper query from the truncated response
-    let query_data = match dns_parser::recover_question_from_response(udp_response) {
+    let tcp_query_data = match dns_parser::recover_question_from_response(udp_response) {
         Ok(data) => data,
         Err(e) => {
             return Err(DnsError::InvalidPacket(format!(
@@ -1145,11 +1222,11 @@ async fn retry_with_tcp(
     };
 
     // Prepare the DNS query for TCP (prepend 2-byte length)
-    let query_len = query_data.len() as u16;
-    let mut tcp_query = Vec::with_capacity(query_data.len() + 2);
+    let query_len = tcp_query_data.len() as u16;
+    let mut tcp_query = Vec::with_capacity(tcp_query_data.len() + 2);
     tcp_query.push((query_len >> 8) as u8);
     tcp_query.push(query_len as u8);
-    tcp_query.extend_from_slice(&query_data);
+    tcp_query.extend_from_slice(&tcp_query_data);
 
     // Send the query
     debug!("Sending DNS query via TCP to {upstream_addr}");
@@ -1226,6 +1303,8 @@ async fn retry_with_tcp(
     // Verify the transaction ID in the response
     let response_tid = dns_parser::tid(&response_buf);
     if response_tid != expected_tid {
+        // TCP connections are inherently secure against spoofing due to the three-way handshake
+        // Transaction ID mismatches over TCP indicate a protocol error, not a spoofing attempt
         debug!("TCP response transaction ID mismatch: expected {expected_tid}, got {response_tid}");
         return Err(
             DnsError::UpstreamError("Transaction ID mismatch in TCP response".to_string()).into(),
@@ -1311,6 +1390,9 @@ impl UDPClient {
         let ecs_prefix_v4 = query_manager.get_ecs_prefix_v4();
         let ecs_prefix_v6 = query_manager.get_ecs_prefix_v6();
 
+        // Get the spoof protection configuration from the query manager
+        let spoof_protection = query_manager.get_spoof_protection();
+
         // Extract client IP (without port) for EDNS-client-subnet
         let client_ip = addr.ip().to_string();
 
@@ -1326,6 +1408,7 @@ impl UDPClient {
             enable_ecs,
             ecs_prefix_v4,
             ecs_prefix_v6,
+            spoof_protection,
         );
 
         Self {
@@ -1363,6 +1446,9 @@ impl TCPClient {
         let ecs_prefix_v4 = query_manager.get_ecs_prefix_v4();
         let ecs_prefix_v6 = query_manager.get_ecs_prefix_v6();
 
+        // Get the spoof protection configuration from the query manager
+        let spoof_protection = query_manager.get_spoof_protection();
+
         // Extract client IP (without port) for EDNS-client-subnet
         let client_ip = addr.ip().to_string();
 
@@ -1378,6 +1464,7 @@ impl TCPClient {
             enable_ecs,
             ecs_prefix_v4,
             ecs_prefix_v6,
+            spoof_protection,
         );
 
         Self {
@@ -1803,6 +1890,13 @@ async fn main() -> EtchDnsResult<()> {
         config.load_balancing_strategy
     );
 
+    // Log spoof protection status
+    if config.spoof_protection {
+        info!("DNS spoofing protection: ENABLED (TCP fallback on UDP transaction ID mismatch)");
+    } else {
+        info!("DNS spoofing protection: DISABLED");
+    }
+
     // Log domain filtering information
     if let Some(file) = &config.allowed_zones_file {
         info!("Domain filtering enabled with allowed zones file: {file}");
@@ -2101,6 +2195,7 @@ async fn main() -> EtchDnsResult<()> {
         config.enable_ecs,
         config.ecs_prefix_v4,
         config.ecs_prefix_v6,
+        config.spoof_protection,
     );
 
     // Set the DNS cache in the query manager

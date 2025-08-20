@@ -93,6 +93,7 @@ pub fn create_resolver_with_client_ip(
                         enable_ecs_clone,
                         ecs_prefix_v4_clone,
                         ecs_prefix_v6_clone,
+                        true, // Default spoof_protection to enabled for security
                     )
                 } else {
                     // Create a regular client query without ECS
@@ -126,6 +127,7 @@ pub fn create_resolver_with_client_ip(
                     enable_ecs: enable_ecs_clone,
                     ecs_prefix_v4: ecs_prefix_v4_clone,
                     ecs_prefix_v6: ecs_prefix_v6_clone,
+                    spoof_protection: true, // Default to enabled for security
                 }
             }
         };
