@@ -205,12 +205,14 @@ pub trait DnsQueryProcessor {
 
 /// Extracts the client IP from a client address string
 fn extract_client_ip(client_addr: &str) -> String {
-    if let Some(ip) = client_addr.split(':').next() {
-        ip.to_string()
-    } else {
-        warn!("Unable to parse client address: {client_addr}, using 'unknown'");
-        "unknown".to_string()
+    if let Ok(sa) = client_addr.parse::<std::net::SocketAddr>() {
+        return sa.ip().to_string();
     }
+    if let Ok(ip) = client_addr.parse::<std::net::IpAddr>() {
+        return ip.to_string();
+    }
+    warn!("Unable to parse client address: {client_addr}, using 'unknown'");
+    "unknown".to_string()
 }
 
 /// Prepares a resolver function for a DNS query
