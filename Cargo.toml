@@ -1,6 +1,6 @@
 [package]
 name = "etchdns"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A caching DNS proxy with advanced security features, WebAssembly hooks, and comprehensive protection mechanisms"
 authors = ["Frank Denis"]
