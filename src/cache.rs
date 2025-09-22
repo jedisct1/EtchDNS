@@ -42,18 +42,18 @@ pub fn create_dns_cache(capacity: usize) -> SyncDnsCache {
     }
 
     // Log the failure and try with half capacity
-    error!("Failed to create DNS cache with requested capacity {capacity}");
+    error!("Failed to create DNS cache with requested capacity of {capacity} entries");
     let smaller_capacity = std::cmp::max(100, capacity / 2);
-    warn!("Falling back to smaller DNS cache capacity: {smaller_capacity}");
+    warn!("Falling back to smaller DNS cache capacity: {smaller_capacity} entries");
 
     if let Ok(cache) = SyncSieveCache::<DNSKey, CachedResponse>::new(smaller_capacity) {
         return cache;
     }
 
     // Log the failure and try with minimal capacity
-    error!("Failed to create DNS cache with reduced capacity {smaller_capacity}");
+    error!("Failed to create DNS cache with reduced capacity of {smaller_capacity} entries");
     let minimal_capacity = 10; // Absolute minimum size that should work
-    warn!("Falling back to minimal DNS cache capacity: {minimal_capacity}");
+    warn!("Falling back to minimal DNS cache capacity: {minimal_capacity} entries");
 
     // Last attempt with minimal capacity
     match SyncSieveCache::<DNSKey, CachedResponse>::new(minimal_capacity) {
@@ -61,14 +61,16 @@ pub fn create_dns_cache(capacity: usize) -> SyncDnsCache {
         Err(e) => {
             // If this fails, create a stub implementation that doesn't actually cache
             // This allows the program to continue running, albeit with degraded functionality
-            error!("Critical error: Failed to allocate even minimal DNS cache: {e}");
+            error!(
+                "Critical error: Failed to allocate even minimal DNS cache with {minimal_capacity} entries: {e}"
+            );
             warn!("Running with a non-functional cache - performance will be degraded");
 
-            // Create a placeholder cache with capacity 0
+            // Create a placeholder cache with capacity 1
             SyncSieveCache::<DNSKey, CachedResponse>::new(1)
-                .unwrap_or_else(|_| {
+                .unwrap_or_else(|e2| {
                     // This should never happen with capacity 1, but just in case
-                    panic!("Fatal error: Cannot allocate even a trivial cache. System is likely out of memory.")
+                    panic!("Fatal error: Cannot allocate even a trivial cache with 1 entry. System is likely out of memory: {e2}")
                 })
         }
     }

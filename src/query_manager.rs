@@ -140,27 +140,31 @@ impl QueryManager {
                 } else {
                     // Log the failure and try with half capacity
                     error!(
-                        "Failed to create query slab with requested capacity: {max_inflight_queries}"
+                        "Failed to create query slab with requested capacity of {max_inflight_queries} entries"
                     );
                     let smaller_capacity = std::cmp::max(100, max_inflight_queries / 2);
-                    warn!("Falling back to smaller query slab capacity: {smaller_capacity}");
+                    warn!(
+                        "Falling back to smaller query slab capacity: {smaller_capacity} entries"
+                    );
 
                     if let Ok(s) = Slab::with_capacity(smaller_capacity) {
                         s
                     } else {
                         // Log the failure and try with minimal capacity
                         error!(
-                            "Failed to create query slab with reduced capacity: {smaller_capacity}"
+                            "Failed to create query slab with reduced capacity of {smaller_capacity} entries"
                         );
                         let minimal_capacity = 10; // Absolute minimum that should work
-                        warn!("Falling back to minimal query slab capacity: {minimal_capacity}");
+                        warn!(
+                            "Falling back to minimal query slab capacity: {minimal_capacity} entries"
+                        );
 
                         match Slab::with_capacity(minimal_capacity) {
                             Ok(s) => s,
                             Err(e) => {
                                 // Last resort - try with capacity 1
                                 error!(
-                                    "Critical error: Failed to allocate even minimal query slab: {e}"
+                                    "Critical error: Failed to allocate even minimal query slab with {minimal_capacity} entries: {e}"
                                 );
                                 warn!(
                                     "Attempting with capacity 1 - performance will be severely degraded"
@@ -168,7 +172,7 @@ impl QueryManager {
 
                                 Slab::with_capacity(1).unwrap_or_else(|e2| {
                                     // This should never happen with capacity 1, but just in case
-                                    panic!("Fatal error: Cannot allocate even a trivial slab. System is likely out of memory: {e2}")
+                                    panic!("Fatal error: Cannot allocate even a trivial slab with 1 entry. System is likely out of memory: {e2}")
                                 })
                             }
                         }

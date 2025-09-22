@@ -610,25 +610,25 @@ impl Config {
         // Validate rate limiting parameters
         if self.udp_rate_limit_window > 0 && self.udp_rate_limit_count == 0 {
             return Err(EtchDnsError::Other(
-                "Invalid udp_rate_limit_count: must be greater than 0 when rate limiting is enabled".to_string(),
+                "Invalid udp_rate_limit_count: must be greater than 0 when UDP rate limiting is enabled".to_string(),
             ));
         }
 
         if self.tcp_rate_limit_window > 0 && self.tcp_rate_limit_count == 0 {
             return Err(EtchDnsError::Other(
-                "Invalid tcp_rate_limit_count: must be greater than 0 when rate limiting is enabled".to_string(),
+                "Invalid tcp_rate_limit_count: must be greater than 0 when TCP rate limiting is enabled".to_string(),
             ));
         }
 
         if self.udp_rate_limit_window > 0 && self.udp_rate_limit_max_clients == 0 {
             return Err(EtchDnsError::Other(
-                "Invalid udp_rate_limit_max_clients: must be greater than 0 when rate limiting is enabled".to_string(),
+                "Invalid udp_rate_limit_max_clients: must be greater than 0 when UDP rate limiting is enabled".to_string(),
             ));
         }
 
         if self.tcp_rate_limit_window > 0 && self.tcp_rate_limit_max_clients == 0 {
             return Err(EtchDnsError::Other(
-                "Invalid tcp_rate_limit_max_clients: must be greater than 0 when rate limiting is enabled".to_string(),
+                "Invalid tcp_rate_limit_max_clients: must be greater than 0 when TCP rate limiting is enabled".to_string(),
             ));
         }
 
@@ -651,13 +651,13 @@ impl Config {
         // Validate DoH rate limiting parameters
         if self.doh_rate_limit_window > 0 && self.doh_rate_limit_count == 0 {
             return Err(EtchDnsError::Other(
-                "Invalid doh_rate_limit_count: must be greater than 0 when rate limiting is enabled".to_string(),
+                "Invalid doh_rate_limit_count: must be greater than 0 when DoH rate limiting is enabled".to_string(),
             ));
         }
 
         if self.doh_rate_limit_window > 0 && self.doh_rate_limit_max_clients == 0 {
             return Err(EtchDnsError::Other(
-                "Invalid doh_rate_limit_max_clients: must be greater than 0 when rate limiting is enabled".to_string(),
+                "Invalid doh_rate_limit_max_clients: must be greater than 0 when DoH rate limiting is enabled".to_string(),
             ));
         }
 
@@ -1623,13 +1623,13 @@ async fn process_tcp_connection(
                                             // Remove the client by slot
                                             if let Err(e) = slab.remove(client_slot) {
                                                 error!(
-                                                    "Failed to remove TCP client from slab: {e}"
+                                                    "Failed to remove TCP client {addr} from slab (slot {client_slot}): {e}"
                                                 );
                                             } else {
                                                 // No need to manually track TCP clients, we now use slab length directly
 
                                                 debug!(
-                                                    "Removed TCP client from slab with slot {}, slab size: {}",
+                                                    "Removed TCP client {addr} from slab with slot {}, slab size: {}",
                                                     client_slot,
                                                     slab.len()
                                                 );
@@ -1925,14 +1925,23 @@ async fn main() -> EtchDnsResult<()> {
     // Bind to each address
     for socket_addr in socket_addrs.iter() {
         // Bind UDP socket
-        let udp_socket = UdpSocket::bind(socket_addr)
-            .await
-            .map_err(EtchDnsError::SocketBindError)?;
+        let udp_socket = UdpSocket::bind(socket_addr).await.map_err(|e| {
+            EtchDnsError::SocketBindError(std::io::Error::new(
+                e.kind(),
+                format!("Failed to bind UDP socket to {}: {}", socket_addr, e),
+            ))
+        })?;
         info!(
             "Listening on UDP: {}",
-            udp_socket
-                .local_addr()
-                .map_err(EtchDnsError::SocketBindError)?
+            udp_socket.local_addr().map_err(|e| {
+                EtchDnsError::SocketBindError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to get local address for UDP socket bound to {}: {}",
+                        socket_addr, e
+                    ),
+                ))
+            })?
         );
         let upstream_socket_fd = udp_socket.as_raw_fd();
         let filter = bpfprog!(8,72 0 0 4,53 0 5 17,72 0 0 12,21 0 3 1,72 0 0 18,37 1 0 1,6 0 0 262144,6 0 0 0);
@@ -1945,12 +1954,23 @@ async fn main() -> EtchDnsResult<()> {
         // Bind TCP listener
         let tcp_listener = tokio::net::TcpListener::bind(socket_addr)
             .await
-            .map_err(EtchDnsError::SocketBindError)?;
+            .map_err(|e| {
+                EtchDnsError::SocketBindError(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to bind TCP listener to {}: {}", socket_addr, e),
+                ))
+            })?;
         info!(
             "Listening on TCP: {}",
-            tcp_listener
-                .local_addr()
-                .map_err(EtchDnsError::SocketBindError)?
+            tcp_listener.local_addr().map_err(|e| {
+                EtchDnsError::SocketBindError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to get local address for TCP listener bound to {}: {}",
+                        socket_addr, e
+                    ),
+                ))
+            })?
         );
 
         // Create a shareable TCP listener
@@ -1973,12 +1993,16 @@ async fn main() -> EtchDnsResult<()> {
         let slab = match Slab::with_capacity(max_udp_clients) {
             Ok(slab) => slab,
             Err(e) => {
-                error!("Failed to create UDP clients slab with requested capacity: {e}");
+                error!(
+                    "Failed to create UDP clients slab with requested capacity of {max_udp_clients}: {e}"
+                );
                 // Fall back to a smaller size if allocation fails
                 let smaller_capacity = std::cmp::max(100, max_udp_clients / 2);
                 warn!("Falling back to smaller UDP client slab capacity: {smaller_capacity}");
                 Slab::with_capacity(smaller_capacity)
-                    .expect("Critical error: Failed to allocate even minimal UDP slab")
+                    .unwrap_or_else(|e| {
+                        panic!("Critical error: Failed to allocate even minimal UDP slab with capacity {smaller_capacity}: {e}")
+                    })
             }
         };
         Arc::new(Mutex::new(slab))
@@ -1987,12 +2011,16 @@ async fn main() -> EtchDnsResult<()> {
         let slab = match Slab::with_capacity(max_tcp_clients) {
             Ok(slab) => slab,
             Err(e) => {
-                error!("Failed to create TCP clients slab with requested capacity: {e}");
+                error!(
+                    "Failed to create TCP clients slab with requested capacity of {max_tcp_clients}: {e}"
+                );
                 // Fall back to a smaller size if allocation fails
                 let smaller_capacity = std::cmp::max(100, max_tcp_clients / 2);
                 warn!("Falling back to smaller TCP client slab capacity: {smaller_capacity}");
                 Slab::with_capacity(smaller_capacity)
-                    .expect("Critical error: Failed to allocate even minimal TCP slab")
+                    .unwrap_or_else(|e| {
+                        panic!("Critical error: Failed to allocate even minimal TCP slab with capacity {smaller_capacity}: {e}")
+                    })
             }
         };
         Arc::new(Mutex::new(slab))
@@ -2601,12 +2629,14 @@ async fn main() -> EtchDnsResult<()> {
 
                                 // Remove the client by slot
                                 if let Err(e) = slab.remove(client_slot) {
-                                    error!("Failed to remove UDP client from slab: {e}");
+                                    error!(
+                                        "Failed to remove UDP client {addr} from slab (slot {client_slot}): {e}"
+                                    );
                                 } else {
                                     // No need to manually track UDP clients, we now use slab length directly
 
                                     debug!(
-                                        "Removed UDP client from slab with slot {}, slab size: {}",
+                                        "Removed UDP client {addr} from slab with slot {}, slab size: {}",
                                         client_slot,
                                         slab.len()
                                     );
