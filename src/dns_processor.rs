@@ -204,6 +204,17 @@ pub trait DnsQueryProcessor {
 }
 
 /// Extracts the client IP from a client address string
+///
+/// This function parses a client address string and extracts just the IP portion,
+/// removing the port number if present. It handles both IPv4 and IPv6 addresses.
+///
+/// # Arguments
+///
+/// * `client_addr` - A string representation of the client address (e.g., "192.168.1.1:53" or "[2001:db8::1]:53")
+///
+/// # Returns
+///
+/// A String containing just the IP address portion, or "unknown" if parsing fails
 fn extract_client_ip(client_addr: &str) -> String {
     if let Ok(sa) = client_addr.parse::<std::net::SocketAddr>() {
         return sa.ip().to_string();
@@ -216,6 +227,24 @@ fn extract_client_ip(client_addr: &str) -> String {
 }
 
 /// Prepares a resolver function for a DNS query
+///
+/// This function creates a closure that can be used to resolve DNS queries by forwarding
+/// them to upstream servers. It configures the resolver with the appropriate settings
+/// including EDNS-client-subnet if enabled.
+///
+/// # Arguments
+///
+/// * `query_manager` - Reference to the query manager for accessing configuration
+/// * `upstream_servers` - Slice of upstream DNS server addresses
+/// * `server_timeout` - Timeout for upstream server responses in seconds
+/// * `dns_packet_len_max` - Maximum DNS packet size
+/// * `stats` - Optional statistics tracker
+/// * `load_balancing_strategy` - Strategy for selecting upstream servers
+/// * `client_ip` - Client IP address for EDNS-client-subnet
+///
+/// # Returns
+///
+/// A closure that takes query data and returns a future resolving to the response
 fn prepare_resolver(
     query_manager: &std::sync::Arc<crate::query_manager::QueryManager>,
     upstream_servers: &[String],
@@ -248,6 +277,23 @@ fn prepare_resolver(
 }
 
 /// Submits a query to the query manager and waits for a response
+///
+/// This function submits a DNS query to the query manager for processing and waits
+/// for the response. It handles the communication with the query manager and
+/// processes the response when it arrives.
+///
+/// # Arguments
+///
+/// * `query_manager` - Reference to the query manager
+/// * `dns_key` - The DNS key representing the query
+/// * `query_data` - The raw DNS query data
+/// * `resolver` - The resolver function to use for upstream queries
+/// * `client_addr` - String representation of the client address for logging
+/// * `client_query_id` - The client's transaction ID
+///
+/// # Returns
+///
+/// An Option containing the response data if successful, or None if an error occurred
 async fn submit_query_and_get_response(
     query_manager: &std::sync::Arc<crate::query_manager::QueryManager>,
     dns_key: DNSKey,
@@ -287,6 +333,19 @@ async fn submit_query_and_get_response(
 }
 
 /// Processes a DNS response and updates the transaction ID
+///
+/// This function takes a DNS response from the query manager, updates the transaction ID
+/// to match the client's original query ID, and returns the processed response data.
+///
+/// # Arguments
+///
+/// * `response` - The DNS response from the query manager
+/// * `client_query_id` - The client's original transaction ID
+/// * `client_addr` - String representation of the client address for logging
+///
+/// # Returns
+///
+/// An Option containing the processed response data if successful, or None if an error occurred
 fn process_dns_response(
     response: crate::query_manager::DnsResponse,
     client_query_id: u16,

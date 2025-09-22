@@ -848,6 +848,22 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
 }
 
 /// Traverses resource records in a DNS packet
+/// Traverses resource records in a DNS packet and calls a callback for each record
+///
+/// This function iterates through a specified number of resource records in a DNS packet,
+/// calling the provided callback function for each record. It handles domain name compression
+/// and validates record boundaries.
+///
+/// # Arguments
+///
+/// * `packet` - The DNS packet data
+/// * `offset` - Starting offset in the packet where the resource records begin
+/// * `rrcount` - Number of resource records to traverse
+/// * `callback` - Function to call for each resource record, receiving the offset of the record
+///
+/// # Returns
+///
+/// The final offset after traversing all records, or an error if packet validation fails
 fn traverse_rrs<F>(
     packet: &[u8],
     mut offset: usize,
@@ -935,7 +951,23 @@ where
     Ok(offset)
 }
 
-/// Traverses resource records in a mutable DNS packet
+/// Traverses resource records in a mutable DNS packet and calls a callback for each record
+///
+/// This function iterates through a specified number of resource records in a mutable DNS packet,
+/// calling the provided callback function for each record. It handles domain name compression
+/// and validates record boundaries. Unlike `traverse_rrs`, this function allows modification
+/// of the packet data.
+///
+/// # Arguments
+///
+/// * `packet` - The mutable DNS packet data
+/// * `offset` - Starting offset in the packet where the resource records begin
+/// * `rrcount` - Number of resource records to traverse
+/// * `callback` - Function to call for each resource record, receiving the packet and offset of the record
+///
+/// # Returns
+///
+/// The final offset after traversing all records, or an error if packet validation fails
 fn traverse_rrs_mut<F>(
     packet: &mut [u8],
     mut offset: usize,
@@ -1379,6 +1411,26 @@ pub fn set_tid(packet: &mut [u8], tid: u16) -> DnsResult<()> {
 }
 
 /// Returns the flags field from the DNS packet
+///
+/// The flags field contains various DNS header flags including:
+/// - QR (Query/Response) bit
+/// - Opcode (operation code)
+/// - AA (Authoritative Answer) bit
+/// - TC (Truncation) bit
+/// - RD (Recursion Desired) bit
+/// - RA (Recursion Available) bit
+/// - Z (Reserved for future use)
+/// - AD (Authentic Data) bit
+/// - CD (Checking Disabled) bit
+/// - RCODE (Response code)
+///
+/// # Arguments
+///
+/// * `packet` - The DNS packet data
+///
+/// # Returns
+///
+/// The 16-bit flags field value, or 0 for malformed packets
 #[inline]
 pub fn flags(packet: &[u8]) -> u16 {
     if packet.len() < 4 {
