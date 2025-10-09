@@ -181,11 +181,12 @@ pub async fn select_upstream_server<'a>(
             let mut rng = rng();
 
             // To ensure we get a good distribution, we'll use a different approach
-            // Shuffle the eligible servers and take the first two
+            // Shuffle the eligible servers using Fisher-Yates algorithm and take the first two
             let mut indices: Vec<usize> = (0..eligible_servers.len()).collect();
 
+            // Fisher-Yates shuffle: for each position i, swap with a random position j >= i
             for i in 0..indices.len() {
-                let j = rng.random_range(0..indices.len());
+                let j = rng.random_range(i..indices.len());
                 indices.swap(i, j);
             }
 

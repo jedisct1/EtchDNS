@@ -451,39 +451,6 @@ impl QueryManager {
         (response_sender, receiver)
     }
 
-    /// Helper function to create a response and broadcast it
-    ///
-    /// This function creates a DNS response object and broadcasts it to all receivers
-    /// through the provided broadcast sender. It handles the case where all receivers
-    /// have been dropped by logging a debug message.
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - The DNS response data
-    /// * `error` - Optional error message if the response represents an error
-    /// * `sender` - The broadcast sender to use for distributing the response
-    /// * `log_prefix` - Prefix for log messages (e.g., "NXDOMAIN", "REFUSED")
-    ///
-    /// # Returns
-    ///
-    /// The created DnsResponse object
-    fn create_and_broadcast_response(
-        data: Vec<u8>,
-        error: Option<String>,
-        sender: &broadcast::Sender<DnsResponse>,
-        log_prefix: &str,
-    ) -> DnsResponse {
-        let response = DnsResponse { data, error };
-
-        // Send the response to all receivers
-        if let Err(e) = sender.send(response.clone()) {
-            // This can happen if all receivers have been dropped
-            log::debug!("Failed to send {log_prefix} response: {e}");
-        }
-
-        response
-    }
-
     /// Creates a new query task to handle a DNS query
     /// Returns a tuple (QueryTask, receiver) for the task
     async fn create_query_task(
