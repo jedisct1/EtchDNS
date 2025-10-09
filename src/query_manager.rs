@@ -582,7 +582,42 @@ impl QueryManager {
                                 // Log the error
                                 log::debug!("Failed to resolve DNS query: {e}");
 
-                                // Create an error response with empty data
+                                // Check if we should serve stale entries when upstream fails
+                                if self_clone.serve_stale_grace_time > 0 {
+                                    // Check if we have a stale entry in the cache
+                                    if let Some(cache) = &self_clone.cache {
+                                        if let Some(cached_response) = cache.get(&key_clone) {
+                                            // Serve stale entry even if expired, as long as it's within grace period
+                                            let expired_ago = if cached_response.is_expired() {
+                                                match std::time::SystemTime::now()
+                                                    .duration_since(cached_response.expires_at)
+                                                {
+                                                    Ok(duration) => duration.as_secs(),
+                                                    Err(_) => 0,
+                                                }
+                                            } else {
+                                                0 // Not expired yet
+                                            };
+
+                                            // Check if the entry is within the grace period
+                                            if expired_ago <= self_clone.serve_stale_grace_time {
+                                                return Self::handle_stale_cache_entry(
+                                                    &key_clone,
+                                                    &cached_response,
+                                                    self_clone.serve_stale_ttl,
+                                                    &response_sender_clone,
+                                                    &in_flight_queries_arc,
+                                                    &query_slab_arc,
+                                                    cache,
+                                                    &format!("upstream error: {e}"),
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // No stale entry available, create an error response
                                 let response = DnsResponse {
                                     data: Vec::new(),
                                     error: Some(format!("DNS query failed: {e}")),
@@ -1161,5 +1196,264 @@ impl QueryManager {
     /// Get whether spoof protection is enabled
     pub fn get_spoof_protection(&self) -> bool {
         self.spoof_protection
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dns_key::DNSKey;
+    use crate::cache::{CachedResponse, create_dns_cache};
+    use crate::stats::SharedStats;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Test that stale cache entries are served when upstream resolver fails
+    #[tokio::test]
+    async fn test_serve_stale_on_upstream_error() {
+        // Create a query manager with serve_stale enabled
+        let stats = Arc::new(SharedStats::new());
+        let mut query_manager = QueryManager::new(
+            100,                                // max_inflight_queries
+            2,                                  // server_timeout (short for testing)
+            512,                                // dns_packet_len_max
+            stats,
+            LoadBalancingStrategy::Random,
+            false,                              // authoritative_dns
+            3600,                               // serve_stale_grace_time (1 hour)
+            300,                                // serve_stale_ttl (5 minutes)
+            60,                                 // negative_cache_ttl
+            1,                                  // min_cache_ttl
+            false,                              // enable_ecs
+            24,                                 // ecs_prefix_v4
+            56,                                 // ecs_prefix_v6
+            true,                               // spoof_protection
+        );
+
+        // Create and set a cache
+        let cache = create_dns_cache(100);
+        query_manager.set_cache(cache.clone());
+
+        // Create a DNS key for testing
+        let key = DNSKey {
+            name: "example.com.".to_string(),
+            qtype: 1,  // A record
+            qclass: 1, // IN
+            dnssec: false,
+        };
+
+        // Create a fake DNS response (just some valid-looking data)
+        let fake_response = vec![
+            0x00, 0x01, // Transaction ID
+            0x81, 0x80, // Flags: response, no error
+            0x00, 0x01, // Questions: 1
+            0x00, 0x01, // Answers: 1
+            0x00, 0x00, // Authority: 0
+            0x00, 0x00, // Additional: 0
+            // Question section (example.com A IN)
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+            0x03, b'c', b'o', b'm',
+            0x00, // null terminator
+            0x00, 0x01, // Type A
+            0x00, 0x01, // Class IN
+            // Answer section
+            0xc0, 0x0c, // Name pointer to question
+            0x00, 0x01, // Type A
+            0x00, 0x01, // Class IN
+            0x00, 0x00, 0x00, 0x3c, // TTL: 60 seconds
+            0x00, 0x04, // Data length: 4
+            0x5d, 0xb8, 0xd8, 0x22, // IP: 93.184.216.34
+        ];
+
+        // Add an expired cache entry (expired 100 seconds ago, but within grace period)
+        let expiry_time = std::time::SystemTime::now() - Duration::from_secs(100);
+        let cached_response = CachedResponse {
+            data: fake_response.clone(),
+            expires_at: expiry_time,
+        };
+        cache.insert(key.clone(), cached_response);
+
+        // Create a simple DNS query packet for example.com
+        let query_data = vec![
+            0x00, 0x01, // Transaction ID
+            0x01, 0x00, // Flags: standard query
+            0x00, 0x01, // Questions: 1
+            0x00, 0x00, // Answers: 0
+            0x00, 0x00, // Authority: 0
+            0x00, 0x00, // Additional: 0
+            // Question section
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+            0x03, b'c', b'o', b'm',
+            0x00, // null terminator
+            0x00, 0x01, // Type A
+            0x00, 0x01, // Class IN
+        ];
+
+        // Create a resolver that always fails (simulates timeout/error)
+        let failing_resolver = |_data: Vec<u8>| {
+            Box::pin(async {
+                Err(DnsError::UpstreamTimeout)
+            }) as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+        };
+
+        // Submit the query with the failing resolver
+        let mut receiver = query_manager
+            .submit_query_with_client(key.clone(), query_data, failing_resolver, "127.0.0.1:12345")
+            .await
+            .expect("Failed to submit query");
+
+        // Wait for the response
+        let response = receiver.recv().await.expect("Failed to receive response");
+
+        // Verify that we got the stale entry, not an error
+        assert!(response.error.is_none(), "Expected no error, but got: {:?}", response.error);
+        assert!(!response.data.is_empty(), "Expected stale data, but got empty response");
+
+        // Verify the response data matches our cached entry
+        assert_eq!(response.data.len(), fake_response.len(), "Response data length mismatch");
+    }
+
+    /// Test that errors are returned when no stale cache entry is available
+    #[tokio::test]
+    async fn test_error_when_no_stale_cache() {
+        // Create a query manager with serve_stale enabled
+        let stats = Arc::new(SharedStats::new());
+        let mut query_manager = QueryManager::new(
+            100,
+            2,
+            512,
+            stats,
+            LoadBalancingStrategy::Random,
+            false,
+            3600,                               // serve_stale_grace_time
+            300,
+            60,
+            1,
+            false,
+            24,
+            56,
+            true,
+        );
+
+        // Create and set a cache (but don't add any entries)
+        let cache = create_dns_cache(100);
+        query_manager.set_cache(cache);
+
+        // Create a DNS key
+        let key = DNSKey {
+            name: "example.com.".to_string(),
+            qtype: 1,
+            qclass: 1,
+            dnssec: false,
+        };
+
+        // Create a query packet
+        let query_data = vec![
+            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+            0x03, b'c', b'o', b'm',
+            0x00, 0x00, 0x01, 0x00, 0x01,
+        ];
+
+        // Create a failing resolver
+        let failing_resolver = |_data: Vec<u8>| {
+            Box::pin(async {
+                Err(DnsError::UpstreamTimeout)
+            }) as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+        };
+
+        // Submit the query
+        let mut receiver = query_manager
+            .submit_query_with_client(key, query_data, failing_resolver, "127.0.0.1:12345")
+            .await
+            .expect("Failed to submit query");
+
+        // Wait for the response
+        let response = receiver.recv().await.expect("Failed to receive response");
+
+        // Verify that we got an error (no stale cache to fall back to)
+        assert!(response.error.is_some(), "Expected an error when no stale cache is available");
+        assert!(response.data.is_empty(), "Expected empty data when no stale cache is available");
+    }
+
+    /// Test that expired cache entries outside grace period are not served
+    #[tokio::test]
+    async fn test_no_serve_stale_outside_grace_period() {
+        // Create a query manager with short grace period
+        let stats = Arc::new(SharedStats::new());
+        let mut query_manager = QueryManager::new(
+            100,
+            2,
+            512,
+            stats,
+            LoadBalancingStrategy::Random,
+            false,
+            60,                                 // serve_stale_grace_time: only 60 seconds
+            300,
+            60,
+            1,
+            false,
+            24,
+            56,
+            true,
+        );
+
+        // Create and set a cache
+        let cache = create_dns_cache(100);
+        query_manager.set_cache(cache.clone());
+
+        // Create a DNS key
+        let key = DNSKey {
+            name: "example.com.".to_string(),
+            qtype: 1,
+            qclass: 1,
+            dnssec: false,
+        };
+
+        // Create a fake response
+        let fake_response = vec![
+            0x00, 0x01, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+            0x03, b'c', b'o', b'm',
+            0x00, 0x00, 0x01, 0x00, 0x01,
+            0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c,
+            0x00, 0x04, 0x5d, 0xb8, 0xd8, 0x22,
+        ];
+
+        // Add a cache entry that expired 120 seconds ago (outside grace period)
+        let expiry_time = std::time::SystemTime::now() - Duration::from_secs(120);
+        let cached_response = CachedResponse {
+            data: fake_response,
+            expires_at: expiry_time,
+        };
+        cache.insert(key.clone(), cached_response);
+
+        // Create a query packet
+        let query_data = vec![
+            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+            0x03, b'c', b'o', b'm',
+            0x00, 0x00, 0x01, 0x00, 0x01,
+        ];
+
+        // Create a failing resolver
+        let failing_resolver = |_data: Vec<u8>| {
+            Box::pin(async {
+                Err(DnsError::UpstreamTimeout)
+            }) as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+        };
+
+        // Submit the query
+        let mut receiver = query_manager
+            .submit_query_with_client(key, query_data, failing_resolver, "127.0.0.1:12345")
+            .await
+            .expect("Failed to submit query");
+
+        // Wait for the response
+        let response = receiver.recv().await.expect("Failed to receive response");
+
+        // Verify that we got an error (stale cache is outside grace period)
+        assert!(response.error.is_some(), "Expected an error when stale cache is outside grace period");
+        assert!(response.data.is_empty(), "Expected empty data when stale cache is outside grace period");
     }
 }
