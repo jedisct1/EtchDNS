@@ -2412,7 +2412,13 @@ async fn main() -> EtchDnsResult<()> {
             let load_balancing_strategy = config
                 .load_balancing_strategy
                 .parse::<load_balancer::LoadBalancingStrategy>()
-                .unwrap();
+                .unwrap_or_else(|_| {
+                    warn!(
+                        "Invalid load balancing strategy: {}, using fastest",
+                        config.load_balancing_strategy
+                    );
+                    load_balancer::LoadBalancingStrategy::Fastest
+                });
 
             // Clone the IP validator for this task
             let doh_ip_validator = ip_validator.clone();

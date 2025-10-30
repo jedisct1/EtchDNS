@@ -1202,8 +1202,8 @@ impl QueryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dns_key::DNSKey;
     use crate::cache::{CachedResponse, create_dns_cache};
+    use crate::dns_key::DNSKey;
     use crate::stats::SharedStats;
     use std::sync::Arc;
     use std::time::Duration;
@@ -1214,20 +1214,20 @@ mod tests {
         // Create a query manager with serve_stale enabled
         let stats = Arc::new(SharedStats::new());
         let mut query_manager = QueryManager::new(
-            100,                                // max_inflight_queries
-            2,                                  // server_timeout (short for testing)
-            512,                                // dns_packet_len_max
+            100, // max_inflight_queries
+            2,   // server_timeout (short for testing)
+            512, // dns_packet_len_max
             stats,
             LoadBalancingStrategy::Random,
-            false,                              // authoritative_dns
-            3600,                               // serve_stale_grace_time (1 hour)
-            300,                                // serve_stale_ttl (5 minutes)
-            60,                                 // negative_cache_ttl
-            1,                                  // min_cache_ttl
-            false,                              // enable_ecs
-            24,                                 // ecs_prefix_v4
-            56,                                 // ecs_prefix_v6
-            true,                               // spoof_protection
+            false, // authoritative_dns
+            3600,  // serve_stale_grace_time (1 hour)
+            300,   // serve_stale_ttl (5 minutes)
+            60,    // negative_cache_ttl
+            1,     // min_cache_ttl
+            false, // enable_ecs
+            24,    // ecs_prefix_v4
+            56,    // ecs_prefix_v6
+            true,  // spoof_protection
         );
 
         // Create and set a cache
@@ -1251,8 +1251,7 @@ mod tests {
             0x00, 0x00, // Authority: 0
             0x00, 0x00, // Additional: 0
             // Question section (example.com A IN)
-            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
-            0x03, b'c', b'o', b'm',
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm',
             0x00, // null terminator
             0x00, 0x01, // Type A
             0x00, 0x01, // Class IN
@@ -1282,8 +1281,7 @@ mod tests {
             0x00, 0x00, // Authority: 0
             0x00, 0x00, // Additional: 0
             // Question section
-            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
-            0x03, b'c', b'o', b'm',
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm',
             0x00, // null terminator
             0x00, 0x01, // Type A
             0x00, 0x01, // Class IN
@@ -1291,9 +1289,8 @@ mod tests {
 
         // Create a resolver that always fails (simulates timeout/error)
         let failing_resolver = |_data: Vec<u8>| {
-            Box::pin(async {
-                Err(DnsError::UpstreamTimeout)
-            }) as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+            Box::pin(async { Err(DnsError::UpstreamTimeout) })
+                as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
         };
 
         // Submit the query with the failing resolver
@@ -1306,11 +1303,22 @@ mod tests {
         let response = receiver.recv().await.expect("Failed to receive response");
 
         // Verify that we got the stale entry, not an error
-        assert!(response.error.is_none(), "Expected no error, but got: {:?}", response.error);
-        assert!(!response.data.is_empty(), "Expected stale data, but got empty response");
+        assert!(
+            response.error.is_none(),
+            "Expected no error, but got: {:?}",
+            response.error
+        );
+        assert!(
+            !response.data.is_empty(),
+            "Expected stale data, but got empty response"
+        );
 
         // Verify the response data matches our cached entry
-        assert_eq!(response.data.len(), fake_response.len(), "Response data length mismatch");
+        assert_eq!(
+            response.data.len(),
+            fake_response.len(),
+            "Response data length mismatch"
+        );
     }
 
     /// Test that errors are returned when no stale cache entry is available
@@ -1325,7 +1333,7 @@ mod tests {
             stats,
             LoadBalancingStrategy::Random,
             false,
-            3600,                               // serve_stale_grace_time
+            3600, // serve_stale_grace_time
             300,
             60,
             1,
@@ -1349,17 +1357,15 @@ mod tests {
 
         // Create a query packet
         let query_data = vec![
-            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
-            0x03, b'c', b'o', b'm',
-            0x00, 0x00, 0x01, 0x00, 0x01,
+            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01,
         ];
 
         // Create a failing resolver
         let failing_resolver = |_data: Vec<u8>| {
-            Box::pin(async {
-                Err(DnsError::UpstreamTimeout)
-            }) as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+            Box::pin(async { Err(DnsError::UpstreamTimeout) })
+                as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
         };
 
         // Submit the query
@@ -1372,8 +1378,14 @@ mod tests {
         let response = receiver.recv().await.expect("Failed to receive response");
 
         // Verify that we got an error (no stale cache to fall back to)
-        assert!(response.error.is_some(), "Expected an error when no stale cache is available");
-        assert!(response.data.is_empty(), "Expected empty data when no stale cache is available");
+        assert!(
+            response.error.is_some(),
+            "Expected an error when no stale cache is available"
+        );
+        assert!(
+            response.data.is_empty(),
+            "Expected empty data when no stale cache is available"
+        );
     }
 
     /// Test that expired cache entries outside grace period are not served
@@ -1388,7 +1400,7 @@ mod tests {
             stats,
             LoadBalancingStrategy::Random,
             false,
-            60,                                 // serve_stale_grace_time: only 60 seconds
+            60, // serve_stale_grace_time: only 60 seconds
             300,
             60,
             1,
@@ -1412,12 +1424,10 @@ mod tests {
 
         // Create a fake response
         let fake_response = vec![
-            0x00, 0x01, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
-            0x03, b'c', b'o', b'm',
-            0x00, 0x00, 0x01, 0x00, 0x01,
-            0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c,
-            0x00, 0x04, 0x5d, 0xb8, 0xd8, 0x22,
+            0x00, 0x01, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01, 0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04, 0x5d,
+            0xb8, 0xd8, 0x22,
         ];
 
         // Add a cache entry that expired 120 seconds ago (outside grace period)
@@ -1430,17 +1440,15 @@ mod tests {
 
         // Create a query packet
         let query_data = vec![
-            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
-            0x03, b'c', b'o', b'm',
-            0x00, 0x00, 0x01, 0x00, 0x01,
+            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01,
         ];
 
         // Create a failing resolver
         let failing_resolver = |_data: Vec<u8>| {
-            Box::pin(async {
-                Err(DnsError::UpstreamTimeout)
-            }) as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+            Box::pin(async { Err(DnsError::UpstreamTimeout) })
+                as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
         };
 
         // Submit the query
@@ -1453,7 +1461,13 @@ mod tests {
         let response = receiver.recv().await.expect("Failed to receive response");
 
         // Verify that we got an error (stale cache is outside grace period)
-        assert!(response.error.is_some(), "Expected an error when stale cache is outside grace period");
-        assert!(response.data.is_empty(), "Expected empty data when stale cache is outside grace period");
+        assert!(
+            response.error.is_some(),
+            "Expected an error when stale cache is outside grace period"
+        );
+        assert!(
+            response.data.is_empty(),
+            "Expected empty data when stale cache is outside grace period"
+        );
     }
 }

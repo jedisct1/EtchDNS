@@ -389,7 +389,10 @@ async fn handle_request(
                 success: false,
                 message: "Endpoint not found".to_string(),
             };
-            let json = serde_json::to_string(&response).unwrap();
+            let json = serde_json::to_string(&response).unwrap_or_else(|e| {
+                error!("Failed to serialize API response: {e}");
+                r#"{"success":false,"message":"Internal server error"}"#.to_string()
+            });
 
             let mut response = Response::new(Full::new(Bytes::from(json)));
             response.headers_mut().insert(
