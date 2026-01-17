@@ -391,6 +391,10 @@ pub fn is_truncated(packet: &[u8]) -> bool {
 
 /// Checks if DNSSEC is requested (either DO bit set or CD bit set)
 pub fn is_dnssec_requested(packet: &[u8]) -> DnsResult<bool> {
+    if packet.len() < 4 {
+        return Err(DnsError::PacketTooShort { offset: 0 });
+    }
+
     // Check CD bit in header flags
     let flags = BigEndian::read_u16(&packet[2..4]);
     if (flags & DNS_FLAGS_CD) == DNS_FLAGS_CD {
@@ -1660,10 +1664,9 @@ pub fn extract_edns0_max_size(packet: &[u8]) -> DnsResult<Option<u16>> {
             }
 
             let size = BigEndian::read_u16(&packet[offset + 2..]);
-            max_size = Some(size);
-
-            // We found what we were looking for, so we can stop traversing
-            return Err(DnsError::InvalidPacket("Found OPT record".to_string()));
+            if max_size.is_none() {
+                max_size = Some(size);
+            }
         }
         Ok(())
     }) {
@@ -1841,6 +1844,19 @@ pub fn recover_question_from_response(response: &[u8]) -> DnsResult<Vec<u8>> {
         ));
     }
 
+    let mut offset = DNS_HEADER_SIZE;
+    for _ in 0..qdcount {
+        offset = skip_name(&query_data, offset)?;
+        if query_data.len() - offset < 4 {
+            return Err(DnsError::PacketTooShort { offset: 0 });
+        }
+        offset = offset.checked_add(4).ok_or_else(|| {
+            DnsError::InvalidPacket("Integer overflow advancing past QTYPE/QCLASS".to_string())
+        })?;
+    }
+
+    query_data.truncate(offset);
+
     // Set answer, authority, and additional counts to 0
     set_ancount(&mut query_data, 0)?;
     set_nscount(&mut query_data, 0)?;
@@ -1952,6 +1968,10 @@ mod tests {
         let query_with_edns0 = create_test_query_with_edns0(4096);
         println!("Query with EDNS0 length: {}", query_with_edns0.len());
 
+        // Validate that the helper returns the EDNS0 max size
+        let edns0_size = extract_edns0_max_size(&query_with_edns0).unwrap();
+        assert_eq!(edns0_size, Some(4096));
+
         // Debug the packet
         println!("EDNS0 packet: {:?}", query_with_edns0);
 
@@ -2040,6 +2060,24 @@ mod tests {
         assert_eq!(ancount(&recovered_query), 0);
         assert_eq!(nscount(&recovered_query), 0);
         assert_eq!(arcount(&recovered_query), 0);
+    }
+
+    #[test]
+    fn test_recover_question_truncates_extra_data() {
+        let query = create_test_query();
+        let mut response = query.clone();
+        set_qr(&mut response, true).unwrap();
+        set_tc(&mut response, true).unwrap();
+        response.extend_from_slice(&[0u8; 32]);
+
+        let recovered_query = recover_question_from_response(&response).unwrap();
+        assert_eq!(recovered_query.len(), query.len());
+    }
+
+    #[test]
+    fn test_is_dnssec_requested_short_packet() {
+        let result = is_dnssec_requested(&[0u8; 3]);
+        assert!(matches!(result, Err(DnsError::PacketTooShort { .. })));
     }
 
     #[test]

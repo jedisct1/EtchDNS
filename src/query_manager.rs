@@ -265,17 +265,19 @@ impl QueryManager {
             let _ = query_logger.log_query(&key, client_addr).await;
         }
 
-        // Extract the client IP (without port) from client_addr
-        // Extract the client IP by finding the part before the colon (if there is one)
-        let client_ip = if let Some(ip) = client_addr.split(':').next() {
-            ip
-        } else {
-            warn!("Unable to parse client address: {client_addr}, using 'unknown'");
-            "unknown"
+        let client_ip = match client_addr.parse::<std::net::SocketAddr>() {
+            Ok(addr) => addr.ip().to_string(),
+            Err(_) => match client_addr.parse::<std::net::IpAddr>() {
+                Ok(ip) => ip.to_string(),
+                Err(_) => {
+                    warn!("Unable to parse client address: {client_addr}, using 'unknown'");
+                    "unknown".to_string()
+                }
+            },
         };
 
         // Call the internal implementation with client IP
-        self.submit_query_internal_with_client(key, query_data, resolver, client_ip)
+        self.submit_query_internal_with_client(key, query_data, resolver, &client_ip)
             .await
     }
 
@@ -337,56 +339,47 @@ impl QueryManager {
             return Ok(cache_response);
         }
 
-        // Check in-flight queries and manage query limits
-        // Use if-let instead of match to simplify the control flow
-        #[allow(clippy::collapsible_if)]
-        #[allow(clippy::needless_return)]
-        if let Ok((mut in_flight_queries, mut query_slab)) =
-            self.manage_in_flight_queries(&key).await
-        {
-            // Create a new task to handle the query
-            let (task, receiver) = self
-                .create_query_task(key.clone(), query_data, resolver)
-                .await;
+        match self.manage_in_flight_queries(&key).await {
+            Ok((mut in_flight_queries, mut query_slab)) => {
+                // Create a new task to handle the query
+                let (task, receiver) = self
+                    .create_query_task(key.clone(), query_data, resolver)
+                    .await;
 
-            // Add the key to the front of the slab to track its age
-            match query_slab.push_front(key.clone()) {
-                Ok(slab_id) => {
-                    // Successfully added to slab, now add to the in-flight map
-                    let inflight_query = InflightQuery { task, slab_id };
-                    in_flight_queries.insert(key.clone(), inflight_query);
+                // Add the key to the front of the slab to track its age
+                match query_slab.push_front(key.clone()) {
+                    Ok(slab_id) => {
+                        // Successfully added to slab, now add to the in-flight map
+                        let inflight_query = InflightQuery { task, slab_id };
+                        in_flight_queries.insert(key.clone(), inflight_query);
 
-                    // No need to track in-flight queries counter, as we directly access slab length instead
+                        // No need to track in-flight queries counter, as we directly access slab length instead
 
-                    log::debug!(
-                        "Added query to slab and in-flight map, slab size: {}, map size: {}",
-                        query_slab.len(),
-                        in_flight_queries.len()
-                    );
+                        log::debug!(
+                            "Added query to slab and in-flight map, slab size: {}, map size: {}",
+                            query_slab.len(),
+                            in_flight_queries.len()
+                        );
 
+                        Ok(receiver)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to add query to slab: {e}");
+                        // Since we couldn't add to the slab, we won't add to the in-flight map either
+                        // This ensures they stay in sync
+                        Err(DnsError::Other(format!("Failed to add query to slab: {e}")).into())
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(receiver) = e.into_receiver() {
+                    // Query is already in flight, return the receiver
                     Ok(receiver)
-                }
-                Err(e) => {
-                    log::error!("Failed to add query to slab: {e}");
-                    // Since we couldn't add to the slab, we won't add to the in-flight map either
-                    // This ensures they stay in sync
-                    Err(DnsError::Other(format!("Failed to add query to slab: {e}")).into())
+                } else {
+                    // Some other error occurred
+                    Err(DnsError::Other("Failed to manage in-flight queries".to_string()).into())
                 }
             }
-        } else if let Err(e) = self.manage_in_flight_queries(&key).await {
-            if let Some(receiver) = e.into_receiver() {
-                // Query is already in flight, return the receiver
-                Ok(receiver)
-            } else {
-                // Some other error occurred
-                Err(DnsError::Other("Failed to manage in-flight queries".to_string()).into())
-            }
-        } else {
-            // This branch should be unreachable as we've covered all the match arms above
-            Err(DnsError::Other(
-                "Unreachable code in submit_query_internal_with_client".to_string(),
-            )
-            .into())
         }
     }
 
