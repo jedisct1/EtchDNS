@@ -584,18 +584,21 @@ pub fn change_ttl(packet: &mut [u8], new_ttl: u32) -> DnsResult<()> {
 
 /// Validates a single character in a domain name label
 ///
-/// According to RFC 1035 and RFC 1123, domain name labels must:
-/// - Start with a letter or digit
-/// - End with a letter or digit
-/// - Contain only letters, digits, and hyphens in between
+/// Allows the LDH (letters, digits, hyphens) set from RFC 1035/1123 plus
+/// a leading underscore per RFC 8552 for underscored labels used by SRV,
+/// DKIM, DMARC, TLSA and similar record types.
 fn is_valid_domain_name_char(c: u8, position: usize, label_len: usize) -> bool {
-    // Check if the character is a letter, digit, or hyphen
     let is_letter = c.is_ascii_lowercase() || c.is_ascii_uppercase();
     let is_digit = c.is_ascii_digit();
     let is_hyphen = c == b'-';
 
-    // First and last characters must be letters or digits
-    if position == 0 || position == label_len - 1 {
+    // Leading underscore allowed per RFC 8552 (e.g., _sip._tcp.example.com)
+    if position == 0 {
+        return is_letter || is_digit || c == b'_';
+    }
+
+    // Last character must be a letter or digit
+    if position == label_len - 1 {
         return is_letter || is_digit;
     }
 
