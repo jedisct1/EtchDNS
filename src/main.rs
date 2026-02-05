@@ -1946,7 +1946,7 @@ async fn main() -> EtchDnsResult<()> {
         let upstream_socket_fd = udp_socket.as_raw_fd();
         let filter = bpfprog!(8,72 0 0 4,53 0 5 17,72 0 0 12,21 0 3 1,72 0 0 18,37 1 0 1,6 0 0 262144,6 0 0 0);
         bpf::attach_filter(upstream_socket_fd, filter).ok();
-        udp_socket.set_tos(0x10).ok();
+        udp_socket.set_tos_v4(0x10).ok();
 
         // Create a shareable UDP socket
         udp_sockets.push(Arc::new(udp_socket));
