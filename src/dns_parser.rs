@@ -1563,7 +1563,7 @@ pub fn set_rcode(packet: &mut [u8], rcode: u8) -> DnsResult<()> {
     } else {
         // For extended RCODEs (16-255), we need to handle them differently
         // Set lower 4 bits to 0 in header
-        packet[3] = packet[3] & 0xF0;
+        packet[3] &= 0xF0;
 
         // Extended RCODEs require an OPT record to hold the upper bits
         // This should be handled by the caller when creating extended RCODE responses

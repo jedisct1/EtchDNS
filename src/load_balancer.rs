@@ -1,6 +1,6 @@
 use crate::stats::SharedStats;
 use log::debug;
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;

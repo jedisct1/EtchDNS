@@ -2,7 +2,7 @@ use crate::dns_parser;
 use crate::errors::{DnsError, EtchDnsResult};
 use crate::stats::SharedStats;
 use log::{debug, error, info, warn};
-use rand::Rng;
+use rand::RngExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

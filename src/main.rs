@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use clap::Parser;
 use log::{debug, error, info, warn};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use slabigator::Slab;
 use std::fs;
