@@ -428,7 +428,7 @@ pub fn is_dnssec_requested(packet: &[u8]) -> DnsResult<bool> {
         let qtype = BigEndian::read_u16(&packet[offset..]);
         if qtype == DNS_TYPE_OPT {
             // OPT record found, check DO bit in flags
-            let opt_flags = BigEndian::read_u16(&packet[offset + 4..]);
+            let opt_flags = BigEndian::read_u16(&packet[offset + 6..]);
             if (opt_flags & DNS_FLAG_DO) == DNS_FLAG_DO {
                 dnssec_requested = true;
             }
@@ -1215,10 +1215,20 @@ pub fn add_edns_client_subnet(
     // Determine family, source prefix length, and address bytes based on IP type
     let (family, source_prefix_length, address_bytes) = match ip_addr {
         std::net::IpAddr::V4(ipv4) => {
+            if prefix_v4 > 32 {
+                return Err(DnsError::InvalidEdns(format!(
+                    "Invalid ECS prefix length {prefix_v4} for IPv4"
+                )));
+            }
             let bytes = ipv4.octets();
             (1u16, prefix_v4, bytes.to_vec())
         }
         std::net::IpAddr::V6(ipv6) => {
+            if prefix_v6 > 128 {
+                return Err(DnsError::InvalidEdns(format!(
+                    "Invalid ECS prefix length {prefix_v6} for IPv6"
+                )));
+            }
             let bytes = ipv6.octets();
             (2u16, prefix_v6, bytes.to_vec())
         }
@@ -2394,6 +2404,15 @@ pub fn extract_edns_client_subnet(packet: &[u8]) -> DnsResult<Option<EdnsClientS
                     let scope_prefix_length = packet[option_offset + 3];
                     let address_offset = option_offset + 4;
                     let address_len = option_len - 4;
+
+                    let max_prefix = match family {
+                        1 => 32,
+                        2 => 128,
+                        _ => u8::MAX,
+                    };
+                    if source_prefix_length > max_prefix {
+                        break;
+                    }
 
                     // Calculate expected address length based on prefix length
                     let expected_address_len = (source_prefix_length as usize).div_ceil(8);

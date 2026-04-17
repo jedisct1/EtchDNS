@@ -72,9 +72,18 @@ pub fn create_response_with_rcode(query_data: &[u8], rcode: u8) -> Vec<u8> {
 
 /// Creates a BADVERS response for unsupported EDNS version
 pub fn create_badvers_response(query_data: &[u8]) -> Vec<u8> {
+    // Strip the original additional section so we return a single corrected OPT record.
+    let stripped_query = match dns_parser::recover_question_from_response(query_data) {
+        Ok(query) => query,
+        Err(e) => {
+            log::error!("Failed to strip additional records for BADVERS response: {e}");
+            query_data.to_vec()
+        }
+    };
+
     // For BADVERS (RCODE 16), we need to handle extended RCODE
     // The lower 4 bits go in the header (0), and the upper 8 bits go in OPT
-    let mut response = create_dns_response(query_data, DNS_RCODE_BADVERS, None);
+    let mut response = create_dns_response(&stripped_query, DNS_RCODE_BADVERS, None);
 
     // We need to manually create an OPT record with extended RCODE
     // First, let's build the OPT record with extended RCODE = 1 (upper 8 bits of 16)
@@ -91,8 +100,7 @@ pub fn create_badvers_response(query_data: &[u8]) -> Vec<u8> {
     // Update ARCOUNT
     let arcount_offset = 10;
     if response.len() > arcount_offset + 2 {
-        let arcount = dns_parser::arcount(&response);
-        dns_parser::set_arcount(&mut response, arcount + 1).unwrap_or_else(|e| {
+        dns_parser::set_arcount(&mut response, 1).unwrap_or_else(|e| {
             log::error!("Failed to update ARCOUNT: {e}");
         });
 
@@ -422,8 +430,8 @@ mod tests {
         // and the extended part (1) should be in the OPT record
         assert_eq!(dns_parser::rcode(&response), 0);
 
-        // Check that response includes an OPT record
-        assert!(dns_parser::arcount(&response) > 0);
+        // Check that response includes exactly one corrected OPT record
+        assert_eq!(dns_parser::arcount(&response), 1);
 
         // Check that the OPT record has EDNS version 0
         let edns_version = dns_parser::extract_edns_version(&response).unwrap();

@@ -3,8 +3,7 @@ use crate::query_manager::QueryManager;
 use crate::stats::SharedStats;
 use base64::{Engine as _, engine::general_purpose};
 use bytes::Bytes;
-use http_body_util::BodyExt;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::{Method, Request, Response, StatusCode, header, server::conn::http1};
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info, warn};
@@ -152,8 +151,11 @@ async fn handle_doh_post_request(
         .unwrap_or("");
 
     if content_type == "application/dns-message" {
-        // Read the request body
-        match req.into_body().collect().await {
+        // Read the request body, enforcing the configured DNS packet size limit
+        match Limited::new(req.into_body(), dns_packet_len_max)
+            .collect()
+            .await
+        {
             Ok(bytes) => {
                 // Process the DNS message
                 process_dns_message(
@@ -168,6 +170,10 @@ async fn handle_doh_post_request(
                 )
                 .await
             }
+            Err(e) if e.downcast_ref::<LengthLimitError>().is_some() => Ok(create_error_response(
+                "Payload Too Large: DNS message exceeds configured maximum size",
+                StatusCode::PAYLOAD_TOO_LARGE,
+            )),
             Err(e) => {
                 error!("Failed to read request body: {e}");
                 Ok(create_error_response(
@@ -301,7 +307,7 @@ pub async fn start_doh_server(
     max_connections: usize,
     rate_limiter: Option<Arc<crate::rate_limiter::RateLimiter>>,
     load_balancing_strategy: crate::load_balancer::LoadBalancingStrategy,
-    ip_validator: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    ip_validator: Option<Arc<crate::ip_validator::IpValidator>>,
     enable_strict_ip_validation: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a TCP listener
@@ -372,15 +378,28 @@ pub async fn start_doh_server(
 async fn is_client_allowed(
     client_addr: SocketAddr,
     rate_limiter: &Option<Arc<crate::rate_limiter::RateLimiter>>,
-    ip_validator: &Option<Arc<dyn std::any::Any + Send + Sync>>,
+    ip_validator: &Option<Arc<crate::ip_validator::IpValidator>>,
     enable_strict_ip_validation: bool,
 ) -> bool {
     // Apply IP validation if enabled
     if enable_strict_ip_validation {
-        if let Some(_validator) = ip_validator {
-            // Validator is available, but we can't use it directly in this module
-            // So we'll just log a message
-            debug!("Using provided IP validator for DoH client {client_addr}");
+        match ip_validator {
+            Some(validator) => {
+                if let Err(e) = validator.validate_ip(client_addr.ip()) {
+                    warn!("Disallowing DoH client {client_addr}: {e}");
+                    return false;
+                }
+                if let Err(e) = validator.validate_port(client_addr.port()) {
+                    warn!("Disallowing DoH client {client_addr}: {e}");
+                    return false;
+                }
+            }
+            None => {
+                warn!(
+                    "Strict IP validation enabled but no validator configured, rejecting DoH client {client_addr}"
+                );
+                return false;
+            }
         }
     }
 

@@ -137,7 +137,21 @@ impl ServerProber {
         )
         .await
         {
-            Ok(Ok((len, _))) => {
+            Ok(Ok((len, response_addr))) => {
+                if response_addr != server_addr {
+                    return Err(DnsError::UpstreamError(format!(
+                        "Unexpected probe response source {response_addr}, expected {server_addr}"
+                    ))
+                    .into());
+                }
+
+                if len < 2 || buf[0] != query[0] || buf[1] != query[1] {
+                    return Err(DnsError::UpstreamError(format!(
+                        "Mismatched DNS transaction ID in response from {server_addr}"
+                    ))
+                    .into());
+                }
+
                 // Got a response
                 let response_time = start_time.elapsed();
 
@@ -221,7 +235,21 @@ pub async fn probe_server(server_addr: SocketAddr, timeout_secs: u64) -> EtchDns
     )
     .await
     {
-        Ok(Ok((len, _))) => {
+        Ok(Ok((len, response_addr))) => {
+            if response_addr != server_addr {
+                return Err(DnsError::UpstreamError(format!(
+                    "Unexpected probe response source {response_addr}, expected {server_addr}"
+                ))
+                .into());
+            }
+
+            if len < 2 || buf[0] != query[0] || buf[1] != query[1] {
+                return Err(DnsError::UpstreamError(format!(
+                    "Mismatched DNS transaction ID in response from {server_addr}"
+                ))
+                .into());
+            }
+
             // Got a response
             let response_time = start_time.elapsed();
 

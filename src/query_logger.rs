@@ -127,14 +127,21 @@ impl QueryLogger {
             let log_dir = log_path.parent().unwrap_or_else(|| Path::new("."));
             let log_name = log_path.file_name().unwrap_or_default().to_string_lossy();
 
-            let _pattern = format!("{log_name}.*.gz");
+            let rotated_prefix = format!("{log_name}.");
             if let Ok(entries) = fs::read_dir(log_dir) {
                 let mut rotated_files: Vec<PathBuf> = entries
                     .filter_map(Result::ok)
                     .filter(|entry| {
                         let file_name = entry.file_name().to_string_lossy().to_string();
-                        file_name.starts_with(&*log_name)
-                            && (file_name.contains(".") || file_name.ends_with(".gz"))
+                        file_name
+                            .strip_prefix(&rotated_prefix)
+                            .map(|suffix| {
+                                suffix.chars().all(|c| c.is_ascii_digit())
+                                    || suffix
+                                        .strip_suffix(".gz")
+                                        .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()))
+                            })
+                            .unwrap_or(false)
                     })
                     .map(|entry| entry.path())
                     .collect();

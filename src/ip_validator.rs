@@ -173,7 +173,12 @@ impl IpValidator {
 
         // Everything before the last part is the IP
         let ip_str = parts[..parts.len() - 1].join(":");
-        let ip = self.validate_ip_str(&ip_str)?;
+        let ip_str = if ip_str.starts_with('[') && ip_str.ends_with(']') {
+            &ip_str[1..ip_str.len() - 1]
+        } else {
+            &ip_str
+        };
+        let ip = self.validate_ip_str(ip_str)?;
 
         // Validate the port
         self.validate_port(port)?;
@@ -265,6 +270,10 @@ impl IpValidator {
 
     /// Validate an IPv6 address
     pub fn validate_ipv6(&self, ip: Ipv6Addr) -> IpValidationResult<Ipv6Addr> {
+        if let Some(ipv4) = ip_v6_to_v4_mapped(&ip) {
+            self.validate_ipv4(ipv4)?;
+        }
+
         // Check for unspecified address (::)
         if self.block_unspecified && ip.is_unspecified() {
             return Err(IpValidationError::Reserved(

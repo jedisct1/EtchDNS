@@ -60,9 +60,13 @@ async fn handle_request(
     let path = req.uri().path();
     let method = req.method();
 
-    // Check if the path starts with the control path
-    if !path.starts_with(&control_path) {
-        // Return 404 for any path not starting with control_path
+    // Only match the exact control path or descendants beneath it.
+    let is_control_path = path == control_path
+        || path
+            .strip_prefix(&control_path)
+            .map(|suffix| control_path.ends_with('/') || suffix.starts_with('/'))
+            .unwrap_or(false);
+    if !is_control_path {
         let mut response = Response::new(Full::new(Bytes::from("Not Found")));
         *response.status_mut() = StatusCode::NOT_FOUND;
         return Ok(response);

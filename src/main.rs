@@ -14,7 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 
-use etchdns::ip_validator::{IpRange, IpValidator};
+use ip_validator::{IpRange, IpValidator};
 
 mod allowed_zones;
 mod cache;
@@ -26,6 +26,7 @@ mod dns_processor;
 mod doh;
 mod errors;
 mod hooks;
+mod ip_validator;
 mod load_balancer;
 mod metrics;
 mod nx_zones;
