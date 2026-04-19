@@ -11,8 +11,6 @@ pub enum IpValidationError {
     Blocked(String),
     /// The port is invalid
     InvalidPort(u16),
-    /// Generic error
-    Other(String),
 }
 
 impl std::fmt::Display for IpValidationError {
@@ -22,7 +20,6 @@ impl std::fmt::Display for IpValidationError {
             IpValidationError::Reserved(msg) => write!(f, "Reserved IP: {msg}"),
             IpValidationError::Blocked(msg) => write!(f, "Blocked IP: {msg}"),
             IpValidationError::InvalidPort(port) => write!(f, "Invalid port: {port}"),
-            IpValidationError::Other(msg) => write!(f, "IP validation error: {msg}"),
         }
     }
 }
@@ -73,6 +70,7 @@ impl Default for IpValidator {
     }
 }
 
+#[allow(dead_code)]
 impl IpValidator {
     /// Create a new IP Validator with default settings
     pub fn new() -> Self {
