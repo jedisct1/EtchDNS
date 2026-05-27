@@ -947,14 +947,14 @@ impl ClientQuery {
                 );
 
                 // Record the successful response in stats if available
-                if let Some(stats) = &self.stats {
-                    if let Ok(addr) = upstream_addr.to_string().parse() {
-                        // Use a reference to avoid cloning
-                        let stats_ref = Arc::clone(stats);
-                        tokio::spawn(async move {
-                            stats_ref.record_success(addr, response_time).await;
-                        });
-                    }
+                if let Some(stats) = &self.stats
+                    && let Ok(addr) = upstream_addr.to_string().parse()
+                {
+                    // Use a reference to avoid cloning
+                    let stats_ref = Arc::clone(stats);
+                    tokio::spawn(async move {
+                        stats_ref.record_success(addr, response_time).await;
+                    });
                 }
 
                 // Process the response
@@ -972,14 +972,14 @@ impl ClientQuery {
                 error!("Failed to receive response from upstream server {upstream_addr}: {e}");
 
                 // Record the failure in stats if available
-                if let Some(stats) = &self.stats {
-                    if let Ok(addr) = upstream_addr.to_string().parse() {
-                        // Use a reference to avoid cloning
-                        let stats_ref = Arc::clone(stats);
-                        tokio::spawn(async move {
-                            stats_ref.record_failure(addr).await;
-                        });
-                    }
+                if let Some(stats) = &self.stats
+                    && let Ok(addr) = upstream_addr.to_string().parse()
+                {
+                    // Use a reference to avoid cloning
+                    let stats_ref = Arc::clone(stats);
+                    tokio::spawn(async move {
+                        stats_ref.record_failure(addr).await;
+                    });
                 }
 
                 Err(DnsError::UpstreamError(format!(
@@ -994,14 +994,14 @@ impl ClientQuery {
                 );
 
                 // Record the timeout in stats if available
-                if let Some(stats) = &self.stats {
-                    if let Ok(addr) = upstream_addr.to_string().parse() {
-                        // Use a reference to avoid cloning
-                        let stats_ref = Arc::clone(stats);
-                        tokio::spawn(async move {
-                            stats_ref.record_timeout(addr).await;
-                        });
-                    }
+                if let Some(stats) = &self.stats
+                    && let Ok(addr) = upstream_addr.to_string().parse()
+                {
+                    // Use a reference to avoid cloning
+                    let stats_ref = Arc::clone(stats);
+                    tokio::spawn(async move {
+                        stats_ref.record_timeout(addr).await;
+                    });
                 }
 
                 // Second attempt
@@ -1055,14 +1055,14 @@ impl ClientQuery {
                         );
 
                         // Record the timeout in stats if available
-                        if let Some(stats) = &self.stats {
-                            if let Ok(addr) = upstream_addr.to_string().parse() {
-                                // Use a reference to avoid cloning
-                                let stats_ref = Arc::clone(stats);
-                                tokio::spawn(async move {
-                                    stats_ref.record_timeout(addr).await;
-                                });
-                            }
+                        if let Some(stats) = &self.stats
+                            && let Ok(addr) = upstream_addr.to_string().parse()
+                        {
+                            // Use a reference to avoid cloning
+                            let stats_ref = Arc::clone(stats);
+                            tokio::spawn(async move {
+                                stats_ref.record_timeout(addr).await;
+                            });
                         }
 
                         // Return timeout error after both attempts failed

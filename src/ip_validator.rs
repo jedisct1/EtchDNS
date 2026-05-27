@@ -403,8 +403,8 @@ impl IpRange {
         let mut cleaned_segments = [0u16; 8];
 
         // Apply netmask to each segment
-        for i in 0..8 {
-            let segment_start_bit = (i as usize).saturating_mul(16);
+        for i in 0usize..8 {
+            let segment_start_bit = i.saturating_mul(16);
 
             if segment_start_bit >= prefix_len as usize {
                 // This entire segment is outside the prefix
@@ -505,8 +505,8 @@ impl IpRange {
                 let base_segments = base.segments();
 
                 // Compare each segment with the appropriate mask
-                for i in 0..8 {
-                    let segment_start_bit = (i as usize).saturating_mul(16);
+                for i in 0usize..8 {
+                    let segment_start_bit = i.saturating_mul(16);
 
                     if segment_start_bit >= *prefix_len as usize {
                         // We've reached the end of the prefix, so we're done

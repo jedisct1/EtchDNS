@@ -109,15 +109,17 @@ fn format_metrics(
         output.push_str(&format!("etchdns_cache_hit_rate {:.4}\n", hit_rate));
 
         // Cache utilization (size/capacity ratio)
-        if let (Some(size), Some(capacity)) = (cache_size, cache_capacity) {
-            if capacity > 0 {
-                output.push_str("# HELP etchdns_cache_utilization_ratio Cache utilization (size/capacity ratio)\n");
-                output.push_str("# TYPE etchdns_cache_utilization_ratio gauge\n");
-                output.push_str(&format!(
-                    "etchdns_cache_utilization_ratio {:.4}\n",
-                    size as f64 / capacity as f64
-                ));
-            }
+        if let (Some(size), Some(capacity)) = (cache_size, cache_capacity)
+            && capacity > 0
+        {
+            output.push_str(
+                "# HELP etchdns_cache_utilization_ratio Cache utilization (size/capacity ratio)\n",
+            );
+            output.push_str("# TYPE etchdns_cache_utilization_ratio gauge\n");
+            output.push_str(&format!(
+                "etchdns_cache_utilization_ratio {:.4}\n",
+                size as f64 / capacity as f64
+            ));
         }
     }
 

@@ -290,12 +290,12 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
     }
 
     // Check EDNS version if OPT record is present
-    if let Some(edns_version) = extract_edns_version(packet)? {
-        if edns_version != 0 {
-            return Err(DnsError::UnsupportedEdnsVersion {
-                version: edns_version,
-            });
-        }
+    if let Some(edns_version) = extract_edns_version(packet)?
+        && edns_version != 0
+    {
+        return Err(DnsError::UnsupportedEdnsVersion {
+            version: edns_version,
+        });
     }
 
     Ok(())
@@ -928,13 +928,12 @@ where
         // we should validate those domain names too
         let rr_type = BigEndian::read_u16(&packet[offset..offset + 2]);
         match rr_type {
-            DNS_TYPE_NS | DNS_TYPE_CNAME | DNS_TYPE_PTR | DNS_TYPE_MX | DNS_TYPE_SRV => {
+            DNS_TYPE_NS | DNS_TYPE_CNAME | DNS_TYPE_PTR | DNS_TYPE_MX | DNS_TYPE_SRV
                 // These record types contain domain names in their RDATA
                 // Check that the RDATA size is reasonable
-                if rdlen > DNS_MAX_HOSTNAME_SIZE {
+                if rdlen > DNS_MAX_HOSTNAME_SIZE => {
                     debug!("Large RDATA for domain name record: {rdlen} bytes (type: {rr_type})");
                 }
-            }
             _ => {}
         }
 
@@ -1032,13 +1031,12 @@ where
         // we should validate those domain names too
         let rr_type = BigEndian::read_u16(&packet[offset..offset + 2]);
         match rr_type {
-            DNS_TYPE_NS | DNS_TYPE_CNAME | DNS_TYPE_PTR | DNS_TYPE_MX | DNS_TYPE_SRV => {
+            DNS_TYPE_NS | DNS_TYPE_CNAME | DNS_TYPE_PTR | DNS_TYPE_MX | DNS_TYPE_SRV
                 // These record types contain domain names in their RDATA
                 // Check that the RDATA size is reasonable
-                if rdlen > DNS_MAX_HOSTNAME_SIZE {
+                if rdlen > DNS_MAX_HOSTNAME_SIZE => {
                     debug!("Large RDATA for domain name record: {rdlen} bytes (type: {rr_type})");
                 }
-            }
             _ => {}
         }
 
@@ -1372,7 +1370,7 @@ pub fn extract_edns_version(packet: &[u8]) -> DnsResult<Option<u8>> {
 
     traverse_rrs(packet, offset, arcount as usize, |offset| {
         // Check we have at least 8 bytes for TYPE, CLASS, TTL
-        if offset.checked_add(8).map_or(true, |sum| sum > packet_len) {
+        if offset.checked_add(8).is_none_or(|sum| sum > packet_len) {
             return Ok(()); // Skip malformed record
         }
 
@@ -1725,10 +1723,10 @@ pub fn truncate_dns_packet(
     }
 
     // Check if the packet is already small enough (if max_size is provided)
-    if let Some(size) = max_size {
-        if packet.len() <= size {
-            return Ok(packet.to_vec());
-        }
+    if let Some(size) = max_size
+        && packet.len() <= size
+    {
+        return Ok(packet.to_vec());
     }
 
     // Create a new packet with the same header and question

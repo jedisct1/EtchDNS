@@ -318,10 +318,8 @@ impl QueryLogger {
         let mut log_line = String::new();
 
         // Add timestamp if enabled
-        if include_timestamp {
-            if let Ok(time) = SystemTime::now().duration_since(UNIX_EPOCH) {
-                log_line.push_str(&format!("[{}] ", time.as_secs()));
-            }
+        if include_timestamp && let Ok(time) = SystemTime::now().duration_since(UNIX_EPOCH) {
+            log_line.push_str(&format!("[{}] ", time.as_secs()));
         }
 
         // Add client address if enabled (IP only, without port)
@@ -365,10 +363,10 @@ impl QueryLogger {
                             inner.file = Some(new_file);
 
                             // Try writing again
-                            if let Some(file) = &mut inner.file {
-                                if let Err(e) = file.write_all(log_line.as_bytes()) {
-                                    error!("Failed to write to reopened query log file: {e}");
-                                }
+                            if let Some(file) = &mut inner.file
+                                && let Err(e) = file.write_all(log_line.as_bytes())
+                            {
+                                error!("Failed to write to reopened query log file: {e}");
                             }
                         }
                         Err(e) => {

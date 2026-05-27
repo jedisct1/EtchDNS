@@ -523,20 +523,20 @@ impl QueryManager {
                                     );
 
                                     // Check if we have a cached entry (even expired)
-                                    if let Some(cache) = &self_clone.cache {
-                                        if let Some(cached_response) = cache.get(&key_clone) {
-                                            return Self::handle_stale_cache_entry(
-                                                &key_clone,
-                                                &cached_response,
-                                                self_clone.serve_stale_ttl,
-                                                &response_sender_clone,
-                                                &in_flight_queries_arc,
-                                                &query_slab_arc,
-                                                cache,
-                                                "SERVFAIL response",
-                                            )
-                                            .await;
-                                        }
+                                    if let Some(cache) = &self_clone.cache
+                                        && let Some(cached_response) = cache.get(&key_clone)
+                                    {
+                                        return Self::handle_stale_cache_entry(
+                                            &key_clone,
+                                            &cached_response,
+                                            self_clone.serve_stale_ttl,
+                                            &response_sender_clone,
+                                            &in_flight_queries_arc,
+                                            &query_slab_arc,
+                                            cache,
+                                            "SERVFAIL response",
+                                        )
+                                        .await;
                                     }
                                 }
 
@@ -578,34 +578,34 @@ impl QueryManager {
                                 // Check if we should serve stale entries when upstream fails
                                 if self_clone.serve_stale_grace_time > 0 {
                                     // Check if we have a stale entry in the cache
-                                    if let Some(cache) = &self_clone.cache {
-                                        if let Some(cached_response) = cache.get(&key_clone) {
-                                            // Serve stale entry even if expired, as long as it's within grace period
-                                            let expired_ago = if cached_response.is_expired() {
-                                                match std::time::SystemTime::now()
-                                                    .duration_since(cached_response.expires_at)
-                                                {
-                                                    Ok(duration) => duration.as_secs(),
-                                                    Err(_) => 0,
-                                                }
-                                            } else {
-                                                0 // Not expired yet
-                                            };
-
-                                            // Check if the entry is within the grace period
-                                            if expired_ago <= self_clone.serve_stale_grace_time {
-                                                return Self::handle_stale_cache_entry(
-                                                    &key_clone,
-                                                    &cached_response,
-                                                    self_clone.serve_stale_ttl,
-                                                    &response_sender_clone,
-                                                    &in_flight_queries_arc,
-                                                    &query_slab_arc,
-                                                    cache,
-                                                    &format!("upstream error: {e}"),
-                                                )
-                                                .await;
+                                    if let Some(cache) = &self_clone.cache
+                                        && let Some(cached_response) = cache.get(&key_clone)
+                                    {
+                                        // Serve stale entry even if expired, as long as it's within grace period
+                                        let expired_ago = if cached_response.is_expired() {
+                                            match std::time::SystemTime::now()
+                                                .duration_since(cached_response.expires_at)
+                                            {
+                                                Ok(duration) => duration.as_secs(),
+                                                Err(_) => 0,
                                             }
+                                        } else {
+                                            0 // Not expired yet
+                                        };
+
+                                        // Check if the entry is within the grace period
+                                        if expired_ago <= self_clone.serve_stale_grace_time {
+                                            return Self::handle_stale_cache_entry(
+                                                &key_clone,
+                                                &cached_response,
+                                                self_clone.serve_stale_ttl,
+                                                &response_sender_clone,
+                                                &in_flight_queries_arc,
+                                                &query_slab_arc,
+                                                cache,
+                                                &format!("upstream error: {e}"),
+                                            )
+                                            .await;
                                         }
                                     }
                                 }
@@ -633,34 +633,32 @@ impl QueryManager {
                         // Check if we should serve stale entries
                         if self_clone.serve_stale_grace_time > 0 {
                             // Check if we have a stale entry in the cache
-                            if let Some(cache) = &self_clone.cache {
-                                if let Some(cached_response) = cache.get(&key_clone) {
-                                    // Check if the cached response has expired but is within the grace period
-                                    if cached_response.is_expired() {
-                                        // Calculate how long ago the entry expired
-                                        let expired_ago = match std::time::SystemTime::now()
-                                            .duration_since(cached_response.expires_at)
-                                        {
-                                            Ok(duration) => duration.as_secs(),
-                                            Err(_) => 0, // This shouldn't happen, but just in case
-                                        };
+                            if let Some(cache) = &self_clone.cache
+                                && let Some(cached_response) = cache.get(&key_clone)
+                            {
+                                // Check if the cached response has expired but is within the grace period
+                                if cached_response.is_expired() {
+                                    // Calculate how long ago the entry expired
+                                    let expired_ago = match std::time::SystemTime::now()
+                                        .duration_since(cached_response.expires_at)
+                                    {
+                                        Ok(duration) => duration.as_secs(),
+                                        Err(_) => 0, // This shouldn't happen, but just in case
+                                    };
 
-                                        // Check if the entry is within the grace period
-                                        if expired_ago <= self_clone.serve_stale_grace_time {
-                                            return Self::handle_stale_cache_entry(
-                                                &key_clone,
-                                                &cached_response,
-                                                self_clone.serve_stale_ttl,
-                                                &response_sender_clone,
-                                                &in_flight_queries_arc,
-                                                &query_slab_arc,
-                                                cache,
-                                                &format!(
-                                                    "timeout (expired {expired_ago} seconds ago)"
-                                                ),
-                                            )
-                                            .await;
-                                        }
+                                    // Check if the entry is within the grace period
+                                    if expired_ago <= self_clone.serve_stale_grace_time {
+                                        return Self::handle_stale_cache_entry(
+                                            &key_clone,
+                                            &cached_response,
+                                            self_clone.serve_stale_ttl,
+                                            &response_sender_clone,
+                                            &in_flight_queries_arc,
+                                            &query_slab_arc,
+                                            cache,
+                                            &format!("timeout (expired {expired_ago} seconds ago)"),
+                                        )
+                                        .await;
                                     }
                                 }
                             }
@@ -1102,37 +1100,37 @@ impl QueryManager {
         }
 
         // Check if the query is for a nonexistent domain
-        if let Some(nx_zones) = &self.nx_zones {
-            if nx_zones.is_nonexistent(&key.name) {
-                log::debug!("Query for nonexistent domain: {}", key.name);
+        if let Some(nx_zones) = &self.nx_zones
+            && nx_zones.is_nonexistent(&key.name)
+        {
+            log::debug!("Query for nonexistent domain: {}", key.name);
 
-                let log_msg = format!("Query for nonexistent domain: {}", key.name);
-                let (_, receiver) = Self::create_and_send_response_with_flags(
-                    query_data,
-                    crate::dns_processor::DNS_RCODE_NXDOMAIN,
-                    self.authoritative_dns,
-                    Some(&log_msg),
-                );
+            let log_msg = format!("Query for nonexistent domain: {}", key.name);
+            let (_, receiver) = Self::create_and_send_response_with_flags(
+                query_data,
+                crate::dns_processor::DNS_RCODE_NXDOMAIN,
+                self.authoritative_dns,
+                Some(&log_msg),
+            );
 
-                return Some(receiver);
-            }
+            return Some(receiver);
         }
 
         // Check if the query is allowed based on the domain name
-        if let Some(allowed_zones) = &self.allowed_zones {
-            if !allowed_zones.is_allowed(&key.name) {
-                log::warn!("Query rejected: {} is not in allowed zones", key.name);
+        if let Some(allowed_zones) = &self.allowed_zones
+            && !allowed_zones.is_allowed(&key.name)
+        {
+            log::warn!("Query rejected: {} is not in allowed zones", key.name);
 
-                let log_msg = format!("Query rejected: {} is not in allowed zones", key.name);
-                let (_, receiver) = Self::create_and_send_response_with_flags(
-                    query_data,
-                    crate::dns_processor::DNS_RCODE_REFUSED,
-                    self.authoritative_dns,
-                    Some(&log_msg),
-                );
+            let log_msg = format!("Query rejected: {} is not in allowed zones", key.name);
+            let (_, receiver) = Self::create_and_send_response_with_flags(
+                query_data,
+                crate::dns_processor::DNS_RCODE_REFUSED,
+                self.authoritative_dns,
+                Some(&log_msg),
+            );
 
-                return Some(receiver);
-            }
+            return Some(receiver);
         }
 
         // Query passed all filters, continue processing
