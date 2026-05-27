@@ -695,6 +695,7 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
     let mut current_offset = offset;
     let mut jumps = 0;
     let mut total_name_len: usize = 0;
+    let mut result_offset_after_pointer: Option<usize> = None;
 
     loop {
         if current_offset >= packet_len {
@@ -715,7 +716,8 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
                     return Err(DnsError::TooManyCompressionPointers { count: jumps });
                 }
 
-                // For the return value, we only advance 2 bytes for the pointer
+                // For the return value, we only advance 2 bytes for the first pointer,
+                // but still validate the pointer target below.
                 if jumps == 1 {
                     // Use checked_add to prevent integer overflow
                     let result_offset = match current_offset.checked_add(2) {
@@ -734,8 +736,7 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
                             offset: current_offset,
                         });
                     }
-                    current_offset = result_offset;
-                    break;
+                    result_offset_after_pointer = Some(result_offset);
                 }
 
                 // Follow the pointer - safely extract second byte
@@ -851,7 +852,7 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
         }
     }
 
-    Ok(current_offset)
+    Ok(result_offset_after_pointer.unwrap_or(current_offset))
 }
 
 /// Traverses resource records in a DNS packet
