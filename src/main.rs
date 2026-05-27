@@ -1161,6 +1161,11 @@ async fn process_response(
                 return Ok(tcp_response);
             }
             Err(e) => {
+                if should_fallback_to_tcp {
+                    warn!("Failed TCP retry after potential spoofing detected: {e}");
+                    return Err(e);
+                }
+
                 // Log the error but still return the truncated UDP response
                 // This is better than returning nothing
                 warn!(
