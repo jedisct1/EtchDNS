@@ -385,8 +385,12 @@ pub async fn start_metrics_server(
                 }
             });
 
-            // Process the connection
-            if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+            if let Ok(Err(err)) = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                http1::Builder::new().serve_connection(io, service),
+            )
+            .await
+            {
                 // Log any errors
                 log::error!("Error serving connection: {err}");
             }

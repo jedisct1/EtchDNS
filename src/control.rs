@@ -466,8 +466,12 @@ pub async fn start_control_server(
                 async move { handle_request(req, control_path, dns_cache, stats).await }
             });
 
-            // Process the connection
-            if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+            if let Ok(Err(err)) = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                http1::Builder::new().serve_connection(io, service),
+            )
+            .await
+            {
                 // Log any errors
                 error!("Error serving control connection from {client_addr}: {err}");
             }
