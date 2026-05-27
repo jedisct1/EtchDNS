@@ -55,7 +55,7 @@ The compiled WebAssembly module will be available at `target/wasm32-unknown-unkn
    cp target/wasm32-unknown-unknown/release/hooks_plugin.wasm /path/to/etchdns/hooks.wasm
    ```
 
-2. Update the EtchDNS configuration file (`config.toml`) to use the plugin:
+2. Update the EtchDNS configuration file (`etchdns.toml`) to use the plugin:
    ```toml
    # Path to a WebAssembly file containing hook implementations
    hooks_wasm_file = "hooks.wasm"

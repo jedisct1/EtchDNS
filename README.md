@@ -392,11 +392,11 @@ To build a WebAssembly extension for EtchDNS:
    cargo build --target wasm32-unknown-unknown --release
    ```
 
-4. The compiled WebAssembly module will be available at `target/wasm32-unknown-unknown/release/etchdns_hooks_rust.wasm`
+4. The compiled WebAssembly module will be available at `webassembly-plugins/rust/target/wasm32-unknown-unknown/release/hooks_plugin.wasm`
 
 5. Copy the WebAssembly module to your EtchDNS directory and update the configuration:
    ```sh
-   cp target/wasm32-unknown-unknown/release/etchdns_hooks_rust.wasm /path/to/etchdns/hooks.wasm
+   cp target/wasm32-unknown-unknown/release/hooks_plugin.wasm /path/to/etchdns/hooks.wasm
    ```
 
 Alternatively, you can build the Zig example plugin:

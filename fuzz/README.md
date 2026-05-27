@@ -18,27 +18,30 @@ The following fuzz targets are available:
 2. `qname` - Tests the `dns_parser::qname` function
 3. `query_type_class` - Tests the `dns_parser::query_type_class` function
 4. `is_dnssec_requested` - Tests the `dns_parser::is_dnssec_requested` function
-5. `dns_key_from_packet` - Tests the `DNSKey::from_packet` function
+5. `extract_edns_version` - Tests the `dns_parser::extract_edns_version` function
+6. `extract_client_ip` - Tests EDNS Client Subnet IP extraction
+7. `create_dns_response` - Tests synthetic DNS response construction
+8. `dns_key_from_packet` - Tests the `DNSKey::from_packet` function
+9. `ip_range_from_cidr` - Tests `IpRange::from_cidr` CIDR parsing
+10. `ip_validator_validate` - Tests `IpValidator::validate_ip_str`
+11. `rate_limiter_is_allowed` - Tests `RateLimiter::is_allowed`
 
 ## Running the Fuzzing Tests
 
 To run a specific fuzz target:
 
 ```bash
-# Run the validate_dns_packet fuzzer
 cargo fuzz run validate_dns_packet
-
-# Run the qname fuzzer
 cargo fuzz run qname
-
-# Run the query_type_class fuzzer
 cargo fuzz run query_type_class
-
-# Run the is_dnssec_requested fuzzer
 cargo fuzz run is_dnssec_requested
-
-# Run the dns_key_from_packet fuzzer
+cargo fuzz run extract_edns_version
+cargo fuzz run extract_client_ip
+cargo fuzz run create_dns_response
 cargo fuzz run dns_key_from_packet
+cargo fuzz run ip_range_from_cidr
+cargo fuzz run ip_validator_validate
+cargo fuzz run rate_limiter_is_allowed
 ```
 
 ## Corpus

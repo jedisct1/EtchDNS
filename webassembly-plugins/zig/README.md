@@ -10,23 +10,20 @@ This is a Zig implementation of the hooks plugin for EtchDNS. It provides a WebA
 
 ## Building
 
-To build the plugin, you need Zig 0.11.0 or later:
+To build the plugin, you need Zig 0.14.0 or later:
 
 ```bash
-# First, update the hash in build.zig.zon with the correct one
-# You can get this by running the build command and copying the expected hash from the error message
 zig build
 ```
 
-The compiled WebAssembly module will be in `zig-out/bin/hooks-plugin.wasm`.
+The compiled WebAssembly module will be in `zig-out/bin/etchdns-plugin.wasm`.
 
 ## Usage
 
-To use this plugin with EtchDNS, configure the hooks section in your EtchDNS configuration file:
+To use this plugin with EtchDNS, point the `hooks_wasm_file` setting in your EtchDNS configuration file at the built module:
 
 ```toml
-[hooks]
-plugin_path = "/path/to/hooks-plugin.wasm"
+hooks_wasm_file = "/path/to/etchdns-plugin.wasm"
 ```
 
 ## How It Works

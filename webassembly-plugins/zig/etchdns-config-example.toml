@@ -7,8 +7,11 @@ cache_size = 10000
 server_timeout = 2
 
 # Hooks configuration
-[hooks]
-plugin_path = "/path/to/hooks-plugin.wasm"
+# Path to the compiled WebAssembly plugin
+hooks_wasm_file = "/path/to/etchdns-plugin.wasm"
+
+# Set to true if the plugin needs WASI system calls
+hooks_wasm_wasi = false
 
 # Other configuration options
 log_level = "info"
