@@ -11,12 +11,14 @@ homepage = "https://github.com/jedisct1/etchdns"
 documentation = "https://github.com/jedisct1/etchdns"
 keywords = ["dns", "caching", "proxy", "security", "webassembly"]
 categories = ["network-programming", "caching", "web-programming"]
-exclude = [
-    "fuzz/corpus/*",
-    "fuzz/artifacts/*",
-    ".DS_Store",
-    ".zig-cache",
-    "www",
+include = [
+    "/src/**/*.rs",
+    "/Cargo.toml",
+    "/LICENSE",
+    "/README.md",
+    "/etchdns.toml",
+    "/allowed_zones.txt",
+    "/nx_zones.txt",
 ]
 
 [lib]
