@@ -6,7 +6,7 @@ const allocator = std.heap.wasm_allocator;
 
 /// This function is called when a client query is received.
 /// It takes the client IP address and the query name as parameters.
-/// Returns 0 to continue processing the query normally, or -1 to return a REFUSED response.
+/// Writes 0 to continue processing the query normally, or -1 to return a REFUSED response.
 ///
 /// Parameters:
 /// - client_ip: The client's IP address (without port)
@@ -14,18 +14,26 @@ const allocator = std.heap.wasm_allocator;
 export fn hook_client_query_received() i32 {
     const plugin = Plugin.init(allocator);
 
-    // Parse the JSON input
     const Input = struct {
         client_ip: []const u8,
         query_name: []const u8,
     };
 
-    const input = plugin.getJson(Input) catch |err| {
+    const input_bytes = plugin.getInput() catch |err| {
         const error_msg = std.fmt.allocPrint(allocator, "Failed to parse input JSON: {s}", .{@errorName(err)}) catch unreachable;
         plugin.setError(error_msg);
         allocator.free(error_msg);
-        return -1;
+        return 1;
     };
+    defer allocator.free(input_bytes);
+    var parsed = std.json.parseFromSlice(Input, allocator, input_bytes, .{ .ignore_unknown_fields = true }) catch |err| {
+        const error_msg = std.fmt.allocPrint(allocator, "Failed to parse input JSON: {s}", .{@errorName(err)}) catch unreachable;
+        plugin.setError(error_msg);
+        allocator.free(error_msg);
+        return 1;
+    };
+    defer parsed.deinit();
+    const input = parsed.value;
 
     // Log the received query for debugging
     const log_msg = std.fmt.allocPrint(allocator, "Received query from {s} for {s}", .{ input.client_ip, input.query_name }) catch unreachable;
@@ -45,12 +53,12 @@ export fn hook_client_query_received() i32 {
             plugin.log(.Warn, block_msg);
             allocator.free(block_msg);
 
-            // Return -1 to indicate that the query should be refused
-            return -1;
+            plugin.output("-1");
+            return 0;
         }
     }
 
-    // Return 0 to continue processing the query normally
+    plugin.output("0");
     return 0;
 }
 

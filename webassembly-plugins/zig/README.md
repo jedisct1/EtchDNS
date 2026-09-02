@@ -10,7 +10,7 @@ This is a Zig implementation of the hooks plugin for EtchDNS. It provides a WebA
 
 ## Building
 
-To build the plugin, you need Zig 0.14.0 or later:
+To build the plugin, you need Zig 0.17 or later:
 
 ```bash
 zig build
@@ -28,7 +28,7 @@ hooks_wasm_file = "/path/to/etchdns-plugin.wasm"
 
 ## How It Works
 
-The plugin exports a `hook_client_query_received` function that is called by EtchDNS when a DNS query is received. The function takes the client IP address and the query name as parameters and returns:
+The plugin exports a `hook_client_query_received` function that is called by EtchDNS when a DNS query is received. The function takes the client IP address and query name as JSON input, then writes one of these values to the Extism output:
 
 - `0` to continue processing the query normally
 - `-1` to return a REFUSED response

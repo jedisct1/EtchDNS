@@ -14,15 +14,19 @@ pub fn build(b: *std.Build) void {
     const pdk_module = pdk_dep.module("extism-pdk");
 
     // Create the plugin executable
-    var plugin = b.addExecutable(.{
+    const plugin = b.addExecutable(.{
         .name = "etchdns-plugin",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "extism-pdk", .module = pdk_module },
+            },
+        }),
     });
     plugin.rdynamic = true;
     plugin.entry = .disabled;
-    plugin.root_module.addImport("extism-pdk", pdk_module);
 
     b.installArtifact(plugin);
     const plugin_step = b.step("etchdns-plugin", "Build etchdns-plugin");

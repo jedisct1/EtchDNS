@@ -1,11 +1,12 @@
 .{
     .name = .etchdns_plugin,
     .version = "0.1.0",
+    .minimum_zig_version = "0.17.0-dev.1936+5a625d5f3",
     .fingerprint = 0xf5103032a7aec2b2,
     .dependencies = .{
         .@"extism-pdk" = .{
-            .url = "git+https://github.com/extism/zig-pdk.git#a8d4e042bcac3a8c2e1919ab78a95b5d6d72cbcb",
-            .hash = "extism_pdk-1.2.1-VkPo80e1AABoK6Eb8-VHD2xQinficsAgqJr4lxulefgr",
+            .url = "git+https://github.com/extism/zig-pdk.git#4ed198f7f515810818335f290b30ca2d39ab0c77",
+            .hash = "extism_pdk-1.2.1-VkPo88e1AABXv_AhODln5rmF_LDMVZO8G1-pYmy55aw3",
         },
     },
     .paths = .{
