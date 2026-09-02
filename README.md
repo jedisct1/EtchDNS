@@ -43,7 +43,7 @@ EtchDNS is a caching DNS proxy designed for security and reliability. It acts as
 
 ## Key Features
 
-### 🚀 Performance
+### Performance
 - **Efficient Caching**: Uses the SIEVE algorithm for optimal memory usage
 - **Query Aggregation**: Eliminates duplicate in-flight queries to reduce upstream load
 - **Smart Load Balancing**: Multiple strategies (fastest/p2/random) to distribute queries
@@ -51,7 +51,7 @@ EtchDNS is a caching DNS proxy designed for security and reliability. It acts as
 - **Protocol Support**: UDP/TCP (standard DNS) and basic DoH (DNS-over-HTTP)
 - **Planned Protocols**: DNSCrypt, PQDNSCrypt, and Anonymized DNSCrypt for improved security and privacy
 
-### 🔒 Security
+### Security
 - **Domain Filtering**: Whitelist and blacklist support with allowed/NX zones
 - **IP Validation**: Block suspicious IP ranges, validate client ports, and prevent address spoofing
 - **Rate Limiting**: Fine-grained control for each protocol (UDP/TCP/DoH)
@@ -59,20 +59,20 @@ EtchDNS is a caching DNS proxy designed for security and reliability. It acts as
 - **Privilege Dropping**: Run with minimal system access after initialization (user, group, and chroot)
 - **Thorough Request Validation**: Comprehensive DNS packet validation
 
-### 💪 Reliability
+### Reliability
 - **Automatic Failover**: Immediate detection of server outages for seamless query routing
 - **Serve Stale**: Continue serving expired cache entries during upstream failures
 - **Health Monitoring**: Regular probing of upstream servers with configurable intervals
 - **Latency Guarantees**: Ensures consistent response times even during upstream slowdowns
 - **Fine-grained Controls**: Separate connection limits for different protocols and in-flight queries
 
-### 📊 Monitoring
+### Monitoring
 - **Prometheus Metrics**: Comprehensive observability with Prometheus endpoint
 - **Remote Control API**: HTTP interface for status monitoring and cache management
 - **Detailed Logging**: Configurable query logging with customizable details
 - **Log Rotation**: Size and time-based log rotation with compression support
 
-### 🧩 Extensibility (WebAssembly)
+### Extensibility (WebAssembly)
 - **Multi-language Plugin Support**: Create custom plugins in any language that compiles to WebAssembly (C/C++, Zig, AssemblyScript, etc.)
 - **Custom Filter Rules**: Implement advanced filtering logic beyond static blocklists
 - **Dynamic Response Modification**: Modify DNS responses based on custom business logic
