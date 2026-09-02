@@ -18,6 +18,14 @@ pub struct DNSKey {
     pub qclass: u16,
     /// Whether DNSSEC is requested
     pub dnssec: bool,
+    /// Whether recursive processing is requested
+    pub recursion_desired: bool,
+    /// Whether DNSSEC validation is disabled
+    pub checking_disabled: bool,
+    /// Whether the client requests authenticated-data signaling
+    pub authenticated_data: bool,
+    /// EDNS client subnet carried by the effective query
+    pub client_subnet: Option<dns_parser::EdnsClientSubnet>,
 }
 
 impl DNSKey {
@@ -33,6 +41,10 @@ impl DNSKey {
             qtype,
             qclass,
             dnssec,
+            recursion_desired: false,
+            checking_disabled: false,
+            authenticated_data: false,
+            client_subnet: None,
         })
     }
 
@@ -51,9 +63,37 @@ impl DNSKey {
         };
 
         let (qtype, qclass) = dns_parser::query_type_class(packet)?;
-        let dnssec = dns_parser::is_dnssec_requested(packet)?;
+        let mut key = DNSKey::new(qname, qtype, qclass, dns_parser::is_dnssec_ok(packet)?)?;
+        key.recursion_desired = dns_parser::is_recursion_desired(packet);
+        key.checking_disabled = dns_parser::is_checking_disabled(packet);
+        key.authenticated_data = dns_parser::is_authenticated_data_requested(packet);
+        key.client_subnet = dns_parser::extract_edns_client_subnet(packet)?;
+        Ok(key)
+    }
 
-        DNSKey::new(qname, qtype, qclass, dnssec)
+    /// Replaces the ECS part of this key with the subnet sent upstream.
+    pub fn set_client_subnet(&mut self, client_ip: &str, prefix_v4: u8, prefix_v6: u8) {
+        let Ok(ip) = client_ip.parse::<std::net::IpAddr>() else {
+            self.client_subnet = None;
+            return;
+        };
+        let (family, prefix, mut address) = match ip {
+            std::net::IpAddr::V4(ip) => (1, prefix_v4, ip.octets().to_vec()),
+            std::net::IpAddr::V6(ip) => (2, prefix_v6, ip.octets().to_vec()),
+        };
+        let address_len = usize::from(prefix).div_ceil(8);
+        address.truncate(address_len);
+        if prefix % 8 != 0
+            && let Some(last) = address.last_mut()
+        {
+            *last &= 0xff << (8 - prefix % 8);
+        }
+        self.client_subnet = Some(dns_parser::EdnsClientSubnet {
+            family,
+            source_prefix_length: prefix,
+            scope_prefix_length: 0,
+            address,
+        });
     }
 
     /// Normalizes a domain name for consistent caching and comparison
@@ -90,6 +130,10 @@ impl PartialEq for DNSKey {
             && self.qtype == other.qtype
             && self.qclass == other.qclass
             && self.dnssec == other.dnssec
+            && self.recursion_desired == other.recursion_desired
+            && self.checking_disabled == other.checking_disabled
+            && self.authenticated_data == other.authenticated_data
+            && self.client_subnet == other.client_subnet
     }
 }
 
@@ -99,5 +143,56 @@ impl Hash for DNSKey {
         self.qtype.hash(state);
         self.qclass.hash(state);
         self.dnssec.hash(state);
+        self.recursion_desired.hash(state);
+        self.checking_disabled.hash(state);
+        self.authenticated_data.hash(state);
+        self.client_subnet.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn query() -> Vec<u8> {
+        vec![
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01,
+        ]
+    }
+
+    #[test]
+    fn query_flags_are_part_of_the_key() {
+        let base = DNSKey::from_packet(&query()).unwrap();
+
+        let mut no_recursion = query();
+        no_recursion[2] &= !0x01;
+        assert_ne!(base, DNSKey::from_packet(&no_recursion).unwrap());
+
+        let mut checking_disabled = query();
+        checking_disabled[3] |= 0x10;
+        assert_ne!(base, DNSKey::from_packet(&checking_disabled).unwrap());
+
+        let mut authenticated_data = query();
+        authenticated_data[3] |= 0x20;
+        assert_ne!(base, DNSKey::from_packet(&authenticated_data).unwrap());
+
+        let mut dnssec_ok = query();
+        dns_parser::add_edns_section(&mut dnssec_ok, 1232).unwrap();
+        let opt_start = dnssec_ok.len() - 11;
+        dnssec_ok[opt_start + 7] |= 0x80;
+        assert_ne!(base, DNSKey::from_packet(&dnssec_ok).unwrap());
+    }
+
+    #[test]
+    fn effective_client_subnet_is_masked_in_the_key() {
+        let mut key = DNSKey::new("example.com".to_string(), 1, 1, false).unwrap();
+        key.set_client_subnet("192.0.2.129", 25, 56);
+
+        let subnet = key.client_subnet.unwrap();
+        assert_eq!(subnet.family, 1);
+        assert_eq!(subnet.source_prefix_length, 25);
+        assert_eq!(subnet.address, vec![192, 0, 2, 128]);
     }
 }

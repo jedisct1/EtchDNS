@@ -24,6 +24,11 @@ pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DN
         debug!("Dropping invalid DNS packet without response");
         return Err(e);
     }
+    if dns_parser::is_response(packet) {
+        return Err(crate::errors::DnsError::InvalidPacket(
+            "Client packet is a response, not a query".to_string(),
+        ));
+    }
 
     // Create a DNSKey from the packet
     match DNSKey::from_packet(packet) {
@@ -59,6 +64,9 @@ pub fn create_dns_response(query_data: &[u8], rcode: u8, log_msg: Option<&str>) 
     // Set the specified RCODE
     if let Err(e) = dns_parser::set_rcode(&mut response, rcode) {
         log::error!("Failed to set RCODE: {e}");
+    }
+    if let Err(e) = dns_parser::set_ad(&mut response, false) {
+        log::error!("Failed to clear AD bit: {e}");
     }
 
     response
@@ -323,7 +331,11 @@ async fn submit_query_and_get_response(
             match receiver.recv().await {
                 Ok(response) => {
                     // Process the response
-                    process_dns_response(response, client_query_id, client_addr)
+                    let client_had_ecs = dns_parser::extract_edns_client_subnet(query_data)
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    process_dns_response(response, client_query_id, client_addr, client_had_ecs)
                 }
                 Err(e) => {
                     log::debug!("Failed to receive response from query manager: {e}");
@@ -358,6 +370,7 @@ fn process_dns_response(
     response: crate::query_manager::DnsResponse,
     client_query_id: u16,
     client_addr: &str,
+    client_had_ecs: bool,
 ) -> Option<Vec<u8>> {
     // Check if the response contains an error
     if let Some(error_msg) = response.error {
@@ -375,6 +388,12 @@ fn process_dns_response(
         log::debug!("Failed to set transaction ID in response: {e}");
         None
     } else {
+        if !client_had_ecs
+            && let Err(e) = crate::dns_parser::remove_edns_client_subnet(&mut response_data)
+        {
+            log::debug!("Failed to remove ECS from client response: {e}");
+            return None;
+        }
         log::debug!("Replaced response transaction ID with client query ID: {client_query_id}");
         Some(response_data)
     }
@@ -482,5 +501,23 @@ mod tests {
             }
             _ => panic!("Expected UnsupportedEdnsVersion error"),
         }
+    }
+
+    #[test]
+    fn test_response_packet_is_not_accepted_as_a_query() {
+        let mut packet = create_test_query_with_edns_version(0);
+        dns_parser::set_qr(&mut packet, true).unwrap();
+
+        assert!(validate_and_create_key(&packet, "127.0.0.1:12345").is_err());
+    }
+
+    #[test]
+    fn test_synthetic_response_clears_ad() {
+        let mut query = create_test_query_with_edns_version(0);
+        query[3] |= 0x20;
+
+        let response = create_dns_response(&query, DNS_RCODE_REFUSED, None);
+
+        assert!(!dns_parser::is_authenticated_data_requested(&response));
     }
 }

@@ -289,6 +289,14 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
         }
     }
 
+    let additional_offset = traverse_rrs(
+        packet,
+        offset,
+        an_count as usize + ns_count as usize,
+        |_| Ok(()),
+    )?;
+    validate_edns_records(packet, additional_offset, ar_count as usize)?;
+
     // Check EDNS version if OPT record is present
     if let Some(edns_version) = extract_edns_version(packet)?
         && edns_version != 0
@@ -296,6 +304,34 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
         return Err(DnsError::UnsupportedEdnsVersion {
             version: edns_version,
         });
+    }
+
+    Ok(())
+}
+
+fn validate_edns_records(packet: &[u8], mut offset: usize, arcount: usize) -> DnsResult<()> {
+    let mut found_opt = false;
+
+    for _ in 0..arcount {
+        let owner_offset = offset;
+        let rr_offset = skip_name(packet, owner_offset)?;
+        if packet.len().saturating_sub(rr_offset) < 10 {
+            return Err(DnsError::PacketTooShort { offset: rr_offset });
+        }
+
+        if BigEndian::read_u16(&packet[rr_offset..rr_offset + 2]) == DNS_TYPE_OPT {
+            if packet[owner_offset] != 0 {
+                return Err(DnsError::InvalidEdns(
+                    "OPT record owner must be the root name".to_string(),
+                ));
+            }
+            if found_opt {
+                return Err(DnsError::InvalidEdns("Duplicate OPT RR found".to_string()));
+            }
+            found_opt = true;
+        }
+
+        offset = traverse_rrs(packet, owner_offset, 1, |_| Ok(()))?;
     }
 
     Ok(())
@@ -390,15 +426,23 @@ pub fn is_truncated(packet: &[u8]) -> bool {
 }
 
 /// Checks if DNSSEC is requested (either DO bit set or CD bit set)
+#[allow(dead_code)]
 pub fn is_dnssec_requested(packet: &[u8]) -> DnsResult<bool> {
     if packet.len() < 4 {
         return Err(DnsError::PacketTooShort { offset: 0 });
     }
 
-    // Check CD bit in header flags
-    let flags = BigEndian::read_u16(&packet[2..4]);
-    if (flags & DNS_FLAGS_CD) == DNS_FLAGS_CD {
+    if is_checking_disabled(packet) {
         return Ok(true);
+    }
+
+    is_dnssec_ok(packet)
+}
+
+/// Checks whether the DNSSEC OK bit is set in an OPT record.
+pub fn is_dnssec_ok(packet: &[u8]) -> DnsResult<bool> {
+    if packet.len() < 4 {
+        return Err(DnsError::PacketTooShort { offset: 0 });
     }
 
     // Check for OPT record with DO bit set
@@ -437,6 +481,21 @@ pub fn is_dnssec_requested(packet: &[u8]) -> DnsResult<bool> {
     })?;
 
     Ok(dnssec_requested)
+}
+
+/// Checks whether recursion is desired.
+pub fn is_recursion_desired(packet: &[u8]) -> bool {
+    flags(packet) & DNS_FLAGS_RD != 0
+}
+
+/// Checks whether DNSSEC validation is disabled.
+pub fn is_checking_disabled(packet: &[u8]) -> bool {
+    flags(packet) & DNS_FLAGS_CD != 0
+}
+
+/// Checks whether the client is interested in authenticated-data signaling.
+pub fn is_authenticated_data_requested(packet: &[u8]) -> bool {
+    flags(packet) & DNS_FLAGS_AD != 0
 }
 
 /// Extracts the query name from a DNS packet
@@ -490,6 +549,20 @@ pub fn query_type_class(packet: &[u8]) -> DnsResult<(u16, u16)> {
     let qclass = BigEndian::read_u16(&packet[offset + 2..]);
 
     Ok((qtype, qclass))
+}
+
+/// Checks whether a DNS response carries the same question as a query.
+pub fn questions_match(query: &[u8], response: &[u8]) -> DnsResult<bool> {
+    if opcode(query) != opcode(response) {
+        return Ok(false);
+    }
+
+    let query_name = qname(query)?;
+    let response_name = qname(response)?;
+    let query_fields = query_type_class(query)?;
+    let response_fields = query_type_class(response)?;
+
+    Ok(query_name.eq_ignore_ascii_case(&response_name) && query_fields == response_fields)
 }
 
 /// Extracts the minimum TTL from all records in a DNS packet
@@ -572,8 +645,49 @@ pub fn change_ttl(packet: &mut [u8], new_ttl: u32) -> DnsResult<()> {
     }
 
     traverse_rrs_mut(packet, offset, total_rr_count, |packet, offset| {
-        // Update TTL
-        BigEndian::write_u32(&mut packet[offset + 4..offset + 8], new_ttl);
+        let rr_type = BigEndian::read_u16(&packet[offset..offset + 2]);
+        if rr_type != DNS_TYPE_OPT {
+            BigEndian::write_u32(&mut packet[offset + 4..offset + 8], new_ttl);
+        }
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+/// Decrements each resource-record TTL by the elapsed cache time.
+pub fn decrement_ttl(packet: &mut [u8], elapsed: u32) -> DnsResult<()> {
+    let packet_len = packet.len();
+    if packet_len <= DNS_OFFSET_QUESTION {
+        return Err(DnsError::PacketTooShort { offset: 0 });
+    }
+    if packet_len > DNS_MAX_PACKET_SIZE {
+        return Err(DnsError::PacketTooLarge {
+            size: packet_len,
+            max_size: DNS_MAX_PACKET_SIZE,
+        });
+    }
+    if qdcount(packet) == 0 {
+        return Err(DnsError::InvalidPacket("No question".to_string()));
+    }
+
+    let mut offset = skip_name(packet, DNS_OFFSET_QUESTION)?;
+    if packet_len - offset < 4 {
+        return Err(DnsError::PacketTooShort { offset: 0 });
+    }
+    offset += 4;
+
+    let total_rr_count =
+        ancount(packet) as usize + nscount(packet) as usize + arcount(packet) as usize;
+    traverse_rrs_mut(packet, offset, total_rr_count, |packet, offset| {
+        let rr_type = BigEndian::read_u16(&packet[offset..offset + 2]);
+        if rr_type != DNS_TYPE_OPT {
+            let ttl = BigEndian::read_u32(&packet[offset + 4..offset + 8]);
+            BigEndian::write_u32(
+                &mut packet[offset + 4..offset + 8],
+                ttl.saturating_sub(elapsed),
+            );
+        }
         Ok(())
     })?;
 
@@ -766,9 +880,22 @@ fn skip_name(packet: &[u8], offset: usize) -> DnsResult<usize> {
                         packet_size: packet_len,
                     });
                 }
+                if pointer >= current_offset {
+                    return Err(DnsError::InvalidCompressionPointer {
+                        offset: current_offset,
+                        pointer,
+                        packet_size: packet_len,
+                    });
+                }
                 current_offset = pointer;
             }
             0 => {
+                if total_name_len.saturating_add(1) > 255 {
+                    return Err(DnsError::DomainNameTooLong {
+                        length: total_name_len + 1,
+                        max_length: 255,
+                    });
+                }
                 // End of domain name
                 current_offset = match current_offset.checked_add(1) {
                     Some(offset) => offset,
@@ -1063,6 +1190,21 @@ where
 
 /// Adds an EDNS section to a DNS packet
 pub fn add_edns_section(packet: &mut Vec<u8>, max_payload_size: u16) -> DnsResult<()> {
+    if packet.len() < DNS_HEADER_SIZE {
+        return Err(DnsError::PacketTooShort { offset: 0 });
+    }
+    if packet.len() > DNS_MAX_PACKET_SIZE {
+        return Err(DnsError::PacketTooLarge {
+            size: packet.len(),
+            max_size: DNS_MAX_PACKET_SIZE,
+        });
+    }
+    if extract_edns_version(packet)?.is_some() {
+        return Err(DnsError::InvalidEdns(
+            "Packet already contains an OPT record".to_string(),
+        ));
+    }
+
     // Create the OPT record
     let opt_rr: [u8; 11] = [
         0,                             // Root domain name
@@ -1205,8 +1347,35 @@ pub fn add_edns_client_subnet(
 
     // Get the current RDLEN
     let rdlen_offset = opt_record_rdlen_offset;
-    let rdlen = BigEndian::read_u16(&packet[rdlen_offset..rdlen_offset + 2]) as usize;
+    let mut rdlen = BigEndian::read_u16(&packet[rdlen_offset..rdlen_offset + 2]) as usize;
     let rdata_offset = rdlen_offset + 2;
+
+    let mut option_offset = rdata_offset;
+    while option_offset < rdata_offset + rdlen {
+        if rdata_offset + rdlen - option_offset < 4 {
+            return Err(DnsError::InvalidEdns(
+                "Truncated EDNS option header".to_string(),
+            ));
+        }
+        let option_code = BigEndian::read_u16(&packet[option_offset..option_offset + 2]);
+        let option_len =
+            BigEndian::read_u16(&packet[option_offset + 2..option_offset + 4]) as usize;
+        let option_end = option_offset
+            .checked_add(4 + option_len)
+            .ok_or_else(|| DnsError::InvalidEdns("EDNS option length overflow".to_string()))?;
+        if option_end > rdata_offset + rdlen {
+            return Err(DnsError::InvalidEdns(
+                "EDNS option exceeds OPT record data".to_string(),
+            ));
+        }
+        if option_code == EDNS_OPTION_CLIENT_SUBNET {
+            packet.drain(option_offset..option_end);
+            rdlen -= option_end - option_offset;
+            continue;
+        }
+        option_offset = option_end;
+    }
+    BigEndian::write_u16(&mut packet[rdlen_offset..rdlen_offset + 2], rdlen as u16);
 
     // Create the EDNS-client-subnet option
     let mut ecs_option = Vec::new();
@@ -1526,6 +1695,20 @@ pub fn set_ra(packet: &mut [u8], recursion_available: bool) -> DnsResult<()> {
         flags_val &= !DNS_FLAGS_RA; // Clear RA bit
     }
     set_flags(packet, flags_val)
+}
+
+/// Sets or clears the AD flag in a DNS packet.
+pub fn set_ad(packet: &mut [u8], authenticated_data: bool) -> DnsResult<()> {
+    if packet.len() < 4 {
+        return Err(DnsError::PacketTooShort { offset: 0 });
+    }
+    let mut current_flags = flags(packet);
+    if authenticated_data {
+        current_flags |= DNS_FLAGS_AD;
+    } else {
+        current_flags &= !DNS_FLAGS_AD;
+    }
+    set_flags(packet, current_flags)
 }
 
 /// Sets the answer count in a DNS packet
@@ -2003,6 +2186,145 @@ mod tests {
     }
 
     #[test]
+    fn test_change_ttl_preserves_opt_metadata() {
+        let mut response = create_test_query();
+        set_qr(&mut response, true).unwrap();
+        set_ancount(&mut response, 1).unwrap();
+        response.extend_from_slice(&[
+            0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04, 192, 0, 2, 1,
+        ]);
+        add_edns_section(&mut response, 1232).unwrap();
+
+        let opt_start = response.len() - 11;
+        response[opt_start + 5..opt_start + 9].copy_from_slice(&[0x12, 0x00, 0x80, 0x00]);
+
+        change_ttl(&mut response, 15).unwrap();
+
+        let answer_ttl_offset = 29 + 2 + 4;
+        assert_eq!(
+            &response[answer_ttl_offset..answer_ttl_offset + 4],
+            &[0, 0, 0, 15]
+        );
+        assert_eq!(
+            &response[opt_start + 5..opt_start + 9],
+            &[0x12, 0x00, 0x80, 0x00]
+        );
+    }
+
+    #[test]
+    fn test_decrement_ttl_preserves_individual_ttls_and_opt() {
+        let mut response = create_test_query();
+        set_qr(&mut response, true).unwrap();
+        set_ancount(&mut response, 2).unwrap();
+        response.extend_from_slice(&[
+            0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x04, 192, 0, 2, 1,
+            0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04, 192, 0, 2, 2,
+        ]);
+        add_edns_section(&mut response, 1232).unwrap();
+        let opt_start = response.len() - 11;
+        response[opt_start + 5..opt_start + 9].copy_from_slice(&[0x12, 0x00, 0x80, 0x00]);
+
+        decrement_ttl(&mut response, 10).unwrap();
+
+        assert_eq!(BigEndian::read_u32(&response[35..39]), 290);
+        assert_eq!(BigEndian::read_u32(&response[51..55]), 50);
+        assert_eq!(
+            &response[opt_start + 5..opt_start + 9],
+            &[0x12, 0x00, 0x80, 0x00]
+        );
+    }
+
+    #[test]
+    fn test_question_matching() {
+        let query = create_test_query();
+        let mut response = query.clone();
+        set_qr(&mut response, true).unwrap();
+        assert!(questions_match(&query, &response).unwrap());
+
+        let qtype_offset = response.len() - 4;
+        response[qtype_offset..qtype_offset + 2].copy_from_slice(&[0, 28]);
+        assert!(!questions_match(&query, &response).unwrap());
+    }
+
+    #[test]
+    fn test_invalid_opt_layout_is_rejected() {
+        let mut duplicate = create_test_query();
+        add_edns_section(&mut duplicate, 1232).unwrap();
+        let opt = duplicate[duplicate.len() - 11..].to_vec();
+        duplicate.extend_from_slice(&opt);
+        set_arcount(&mut duplicate, 2).unwrap();
+        assert!(validate_dns_packet(&duplicate).is_err());
+
+        let mut named = create_test_query();
+        add_edns_section(&mut named, 1232).unwrap();
+        let opt_start = named.len() - 11;
+        named.splice(opt_start..=opt_start, [1, b'x', 0]);
+        assert!(validate_dns_packet(&named).is_err());
+    }
+
+    #[test]
+    fn test_forward_compression_pointer_is_rejected() {
+        let mut response = create_test_query();
+        set_qr(&mut response, true).unwrap();
+        set_ancount(&mut response, 1).unwrap();
+        let answer_start = response.len();
+        let pointer = answer_start + 2;
+        response.extend_from_slice(&[
+            0xc0 | ((pointer >> 8) as u8),
+            pointer as u8,
+            0x00,
+            0x01,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x3c,
+            0x00,
+            0x04,
+            192,
+            0,
+            2,
+            1,
+        ]);
+
+        assert!(validate_dns_packet(&response).is_err());
+    }
+
+    #[test]
+    fn test_wire_name_length_boundary() {
+        fn query_with_labels(lengths: &[usize]) -> Vec<u8> {
+            let mut query = vec![
+                0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ];
+            for &length in lengths {
+                query.push(length as u8);
+                query.extend(std::iter::repeat_n(b'a', length));
+            }
+            query.extend_from_slice(&[0, 0, 1, 0, 1]);
+            query
+        }
+
+        assert!(validate_dns_packet(&query_with_labels(&[63, 63, 63, 61])).is_ok());
+        assert!(validate_dns_packet(&query_with_labels(&[63, 63, 63, 62])).is_err());
+    }
+
+    #[test]
+    fn test_ecs_is_replaced_and_can_be_removed() {
+        let mut query = create_test_query();
+        add_edns_section(&mut query, 1232).unwrap();
+        add_edns_client_subnet(&mut query, "192.0.2.129", 24, 56, 1232).unwrap();
+        add_edns_client_subnet(&mut query, "198.51.100.9", 24, 56, 1232).unwrap();
+
+        let ecs = extract_edns_client_subnet(&query).unwrap().unwrap();
+        assert_eq!(ecs.address, vec![198, 51, 100]);
+
+        remove_edns_client_subnet(&mut query).unwrap();
+        assert!(extract_edns_client_subnet(&query).unwrap().is_none());
+        assert_eq!(arcount(&query), 1);
+    }
+
+    #[test]
     fn test_truncate_dns_packet() {
         // Test truncating a query into a response
         let query = create_test_query();
@@ -2324,7 +2646,7 @@ mod tests {
 }
 
 /// Structure to hold EDNS-client-subnet information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub struct EdnsClientSubnet {
     /// Address family (1 for IPv4, 2 for IPv6)
@@ -2335,6 +2657,83 @@ pub struct EdnsClientSubnet {
     pub scope_prefix_length: u8,
     /// IP address (truncated to the prefix length)
     pub address: Vec<u8>,
+}
+
+/// Removes all EDNS client-subnet options while preserving other OPT options.
+pub fn remove_edns_client_subnet(packet: &mut Vec<u8>) -> DnsResult<()> {
+    let mut offset = skip_name(packet, DNS_OFFSET_QUESTION)?;
+    if packet.len().saturating_sub(offset) < 4 {
+        return Err(DnsError::PacketTooShort { offset });
+    }
+    offset += 4;
+    offset = traverse_rrs(
+        packet,
+        offset,
+        ancount(packet) as usize + nscount(packet) as usize,
+        |_| Ok(()),
+    )?;
+
+    for _ in 0..arcount(packet) {
+        let rr_offset = skip_name(packet, offset)?;
+        if packet.len().saturating_sub(rr_offset) < 10 {
+            return Err(DnsError::PacketTooShort { offset: rr_offset });
+        }
+        let rr_type = BigEndian::read_u16(&packet[rr_offset..rr_offset + 2]);
+        let mut rdlen = BigEndian::read_u16(&packet[rr_offset + 8..rr_offset + 10]) as usize;
+        let rdata_offset = rr_offset + 10;
+        if packet.len().saturating_sub(rdata_offset) < rdlen {
+            return Err(DnsError::InvalidRecord(
+                "OPT record data exceeds packet".to_string(),
+            ));
+        }
+
+        if rr_type == DNS_TYPE_OPT {
+            let mut option_offset = rdata_offset;
+            while option_offset < rdata_offset + rdlen {
+                if rdata_offset + rdlen - option_offset < 4 {
+                    return Err(DnsError::InvalidEdns(
+                        "Truncated EDNS option header".to_string(),
+                    ));
+                }
+                let option_code = BigEndian::read_u16(&packet[option_offset..option_offset + 2]);
+                let option_len =
+                    BigEndian::read_u16(&packet[option_offset + 2..option_offset + 4]) as usize;
+                let option_end = option_offset.checked_add(4 + option_len).ok_or_else(|| {
+                    DnsError::InvalidEdns("EDNS option length overflow".to_string())
+                })?;
+                if option_end > rdata_offset + rdlen {
+                    return Err(DnsError::InvalidEdns(
+                        "EDNS option exceeds OPT record data".to_string(),
+                    ));
+                }
+                if option_code == EDNS_OPTION_CLIENT_SUBNET {
+                    packet.drain(option_offset..option_end);
+                    rdlen -= option_end - option_offset;
+                    continue;
+                }
+                option_offset = option_end;
+            }
+            BigEndian::write_u16(&mut packet[rr_offset + 8..rr_offset + 10], rdlen as u16);
+        }
+
+        offset = rdata_offset + rdlen;
+    }
+
+    Ok(())
+}
+
+/// Checks an ECS response against the subnet in its query.
+pub fn edns_client_subnet_matches(query: &[u8], response: &[u8]) -> DnsResult<bool> {
+    let Some(response_ecs) = extract_edns_client_subnet(response)? else {
+        return Ok(true);
+    };
+    let Some(query_ecs) = extract_edns_client_subnet(query)? else {
+        return Ok(false);
+    };
+
+    Ok(response_ecs.family == query_ecs.family
+        && response_ecs.source_prefix_length == query_ecs.source_prefix_length
+        && response_ecs.address == query_ecs.address)
 }
 
 /// Extracts EDNS-client-subnet information from a DNS packet

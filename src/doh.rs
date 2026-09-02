@@ -100,6 +100,12 @@ async fn handle_doh_get_request(
             // Decode the base64url encoded DNS message
             match general_purpose::URL_SAFE_NO_PAD.decode(value) {
                 Ok(dns_message) => {
+                    if dns_message.len() > dns_packet_len_max {
+                        return Ok(create_error_response(
+                            "Payload Too Large: DNS message exceeds configured maximum size",
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                        ));
+                    }
                     // Process the DNS message
                     process_dns_message(
                         dns_message,
@@ -334,14 +340,7 @@ pub async fn start_doh_server(
         // Spawn a task to handle the connection
         tokio::spawn(async move {
             // Validate the client connection
-            if !is_client_allowed(
-                client_addr,
-                &rate_limiter,
-                &ip_validator,
-                enable_strict_ip_validation,
-            )
-            .await
-            {
+            if !is_client_allowed(client_addr, &ip_validator, enable_strict_ip_validation) {
                 return;
             }
 
@@ -366,6 +365,7 @@ pub async fn start_doh_server(
                 dns_packet_len_max,
                 stats,
                 load_balancing_strategy,
+                rate_limiter,
             )
             .await;
 
@@ -374,10 +374,9 @@ pub async fn start_doh_server(
     }
 }
 
-/// Check if a client connection is allowed based on IP validation and rate limiting
-async fn is_client_allowed(
+/// Check if a client connection is allowed based on IP validation.
+fn is_client_allowed(
     client_addr: SocketAddr,
-    rate_limiter: &Option<Arc<crate::rate_limiter::RateLimiter>>,
     ip_validator: &Option<Arc<crate::ip_validator::IpValidator>>,
     enable_strict_ip_validation: bool,
 ) -> bool {
@@ -403,18 +402,6 @@ async fn is_client_allowed(
         }
     }
 
-    // Check rate limit if enabled
-    if let Some(limiter) = rate_limiter {
-        // Extract the client IP address
-        let client_ip = client_addr.ip();
-
-        // Check if the client is allowed to make a connection
-        if !limiter.is_allowed(client_ip).await {
-            warn!("Rate limit exceeded for DoH client {client_addr}, dropping connection");
-            return false;
-        }
-    }
-
     true
 }
 
@@ -428,6 +415,7 @@ async fn handle_http_connection(
     dns_packet_len_max: usize,
     stats: Arc<SharedStats>,
     load_balancing_strategy: crate::load_balancer::LoadBalancingStrategy,
+    rate_limiter: Option<Arc<crate::rate_limiter::RateLimiter>>,
 ) {
     // Create a service function to handle HTTP requests
     let client_addr_clone = client_addr;
@@ -436,8 +424,18 @@ async fn handle_http_connection(
         let upstream_servers = upstream_servers.clone();
         let stats = stats.clone();
         let client_addr = client_addr_clone;
+        let rate_limiter = rate_limiter.clone();
 
         async move {
+            if let Some(limiter) = rate_limiter
+                && !limiter.is_allowed(client_addr.ip()).await
+            {
+                warn!("Rate limit exceeded for DoH client {client_addr}");
+                return Ok(create_error_response(
+                    "Too Many Requests",
+                    StatusCode::TOO_MANY_REQUESTS,
+                ));
+            }
             handle_doh_request(
                 req,
                 query_manager,
@@ -452,20 +450,7 @@ async fn handle_http_connection(
         }
     });
 
-    // Process the connection with timeout
-    let server_timeout_duration = std::time::Duration::from_secs(server_timeout);
-    let connection_future = http1::Builder::new().serve_connection(io, service);
-
-    match tokio::time::timeout(server_timeout_duration, connection_future).await {
-        Ok(result) => {
-            if let Err(err) = result {
-                // Log any errors
-                error!("Error serving DoH connection from {client_addr}: {err}");
-            }
-        }
-        Err(_) => {
-            // Timeout occurred
-            error!("DoH connection from {client_addr} timed out after {server_timeout} seconds");
-        }
+    if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+        error!("Error serving DoH connection from {client_addr}: {err}");
     }
 }

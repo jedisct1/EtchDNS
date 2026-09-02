@@ -84,7 +84,7 @@ impl RateLimiter {
 
         // Perform cleanup if it's been more than half the window since the last cleanup
         let now = Instant::now();
-        if now.duration_since(state.last_cleanup) > Duration::from_secs(self.window / 2) {
+        if now.duration_since(state.last_cleanup) > Duration::from_secs(self.window) / 2 {
             self.cleanup(&mut state, now);
         }
 
@@ -294,4 +294,19 @@ pub struct RateLimiterStats {
 
     /// Total number of queries within the window
     pub total_recent_queries: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn one_second_window_does_not_clean_up_every_query() {
+        let limiter = RateLimiter::new(1, 10, 10);
+        let initial_cleanup = limiter.state.lock().await.last_cleanup;
+
+        assert!(limiter.is_allowed("192.0.2.1".parse().unwrap()).await);
+
+        assert_eq!(limiter.state.lock().await.last_cleanup, initial_cleanup);
+    }
 }

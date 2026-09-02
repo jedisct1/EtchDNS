@@ -37,8 +37,8 @@ struct CacheStatusResponse {
 /// but "example.org" is not.
 fn is_domain_in_zone(domain: &str, zone: &str) -> bool {
     // Normalize both domain and zone (lowercase, no trailing dot)
-    let normalized_domain = domain.to_lowercase();
-    let normalized_zone = zone.to_lowercase();
+    let normalized_domain = domain.trim_end_matches('.').to_lowercase();
+    let normalized_zone = zone.trim_end_matches('.').to_lowercase();
 
     // Check if domain equals zone
     if normalized_domain == normalized_zone {
@@ -107,11 +107,7 @@ async fn handle_request(
 
                 // Get cache hit/miss statistics from the stats system
                 let (hits, misses, hit_rate) = if let Some(stats_ref) = &stats {
-                    // Get the current stats
-                    let global_stats = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(async { stats_ref.get_stats().await })
-                    });
+                    let global_stats = stats_ref.get_stats().await;
 
                     let hits = global_stats.cache_hits;
                     let misses = global_stats.cache_misses;
@@ -239,15 +235,22 @@ async fn handle_request(
                     return Ok(response);
                 }
 
-                // Get the initial cache size
-                let initial_size = cache.len();
-
-                // Use retain to keep only entries that are NOT in the specified zone
-                cache.retain(|key, _| !is_domain_in_zone(&key.name, zone));
-
-                // Get the new cache size
-                let new_size = cache.len();
-                let removed_entries = initial_size - new_size;
+                let normalized_zone = match crate::dns_key::DNSKey::normalize_name(zone) {
+                    Ok(zone) => zone,
+                    Err(e) => {
+                        let mut response = Response::new(Full::new(Bytes::from(format!(
+                            "Invalid domain name: {e}"
+                        ))));
+                        *response.status_mut() = StatusCode::BAD_REQUEST;
+                        return Ok(response);
+                    }
+                };
+                let (removed_entries, new_size) = cache.with_lock(|inner| {
+                    let initial_size = inner.len();
+                    inner.retain(|key, _| !is_domain_in_zone(&key.name, &normalized_zone));
+                    let new_size = inner.len();
+                    (initial_size.saturating_sub(new_size), new_size)
+                });
 
                 info!("Cleared {removed_entries} entries for zone {zone} from DNS cache");
 
@@ -313,9 +316,6 @@ async fn handle_request(
                     return Ok(response);
                 }
 
-                // Get the initial cache size
-                let initial_size = cache.len();
-
                 // Use retain to keep only entries that don't match the specified name
                 // We need to normalize the name for comparison
                 let normalized_name = match crate::dns_key::DNSKey::normalize_name(name) {
@@ -341,11 +341,12 @@ async fn handle_request(
                         return Ok(response);
                     }
                 };
-                cache.retain(|key, _| key.name != normalized_name);
-
-                // Get the new cache size
-                let new_size = cache.len();
-                let removed_entries = initial_size - new_size;
+                let (removed_entries, new_size) = cache.with_lock(|inner| {
+                    let initial_size = inner.len();
+                    inner.retain(|key, _| key.name != normalized_name);
+                    let new_size = inner.len();
+                    (initial_size.saturating_sub(new_size), new_size)
+                });
 
                 info!("Cleared {removed_entries} entries for name {name} from DNS cache");
 
@@ -478,5 +479,17 @@ pub async fn start_control_server(
 
             debug!("Closed control connection from {client_addr}");
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_domain_in_zone;
+
+    #[test]
+    fn zone_matching_normalizes_case_and_trailing_dots() {
+        assert!(is_domain_in_zone("WWW.Example.COM.", "example.com."));
+        assert!(is_domain_in_zone("example.com", "EXAMPLE.COM."));
+        assert!(!is_domain_in_zone("notexample.com", "example.com."));
     }
 }

@@ -11,6 +11,9 @@ pub struct CachedResponse {
     /// The raw DNS response data
     pub data: Vec<u8>,
 
+    /// The time when this response was cached
+    pub cached_at: SystemTime,
+
     /// The time when this response expires
     pub expires_at: SystemTime,
 }
@@ -18,11 +21,14 @@ pub struct CachedResponse {
 impl CachedResponse {
     /// Create a new cached response with the given data and TTL
     pub fn new(data: Vec<u8>, ttl: Duration) -> Self {
-        let expires_at = SystemTime::now()
-            .checked_add(ttl)
-            .unwrap_or_else(|| SystemTime::now() + Duration::from_secs(u64::MAX));
+        let cached_at = SystemTime::now();
+        let expires_at = cached_at.checked_add(ttl).unwrap_or(cached_at);
 
-        Self { data, expires_at }
+        Self {
+            data,
+            cached_at,
+            expires_at,
+        }
     }
 
     /// Check if the response has expired
@@ -103,5 +109,15 @@ mod tests {
         // Should immediately be expired
         std::thread::sleep(Duration::from_millis(1));
         assert!(cached.is_expired());
+    }
+
+    #[test]
+    fn test_unrepresentable_expiry_does_not_panic() {
+        let result = std::panic::catch_unwind(|| {
+            CachedResponse::new(Vec::new(), Duration::from_secs(u64::MAX))
+        });
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_expired());
     }
 }

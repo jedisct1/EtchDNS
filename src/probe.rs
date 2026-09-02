@@ -3,11 +3,20 @@ use crate::errors::{DnsError, EtchDnsResult};
 use crate::stats::SharedStats;
 use log::{debug, error, info, warn};
 use rand::RngExt;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::time;
+
+fn wildcard_address(peer: SocketAddr) -> SocketAddr {
+    let ip = if peer.is_ipv4() {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    } else {
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+    };
+    SocketAddr::new(ip, 0)
+}
 
 /// Minimum interval between probe queries (in seconds)
 #[allow(dead_code)]
@@ -115,9 +124,11 @@ impl ServerProber {
         let query = self.create_random_query();
 
         // Create a UDP socket for the probe
-        let socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
-            DnsError::UpstreamError(format!("Failed to bind socket for probe: {e}"))
-        })?;
+        let socket = UdpSocket::bind(wildcard_address(server_addr))
+            .await
+            .map_err(|e| {
+                DnsError::UpstreamError(format!("Failed to bind socket for probe: {e}"))
+            })?;
 
         // Start timing
         let start_time = Instant::now();
@@ -213,7 +224,7 @@ pub async fn probe_server(server_addr: SocketAddr, timeout_secs: u64) -> EtchDns
     let query = create_random_query();
 
     // Create a UDP socket for the probe
-    let socket = UdpSocket::bind("0.0.0.0:0")
+    let socket = UdpSocket::bind(wildcard_address(server_addr))
         .await
         .map_err(|e| DnsError::UpstreamError(format!("Failed to bind socket for probe: {e}")))?;
 
@@ -309,6 +320,17 @@ mod tests {
     use super::*;
     use std::net::SocketAddr;
     use std::time::Duration;
+
+    #[test]
+    fn test_wildcard_address_matches_peer_family() {
+        let ipv4 = wildcard_address("192.0.2.1:53".parse().unwrap());
+        let ipv6 = wildcard_address("[2001:db8::1]:53".parse().unwrap());
+
+        assert!(ipv4.is_ipv4());
+        assert!(ipv6.is_ipv6());
+        assert_eq!(ipv4.port(), 0);
+        assert_eq!(ipv6.port(), 0);
+    }
 
     #[tokio::test]
     async fn test_create_random_query() {

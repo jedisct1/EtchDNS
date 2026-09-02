@@ -63,6 +63,9 @@ impl NxZones {
         if self.zones.is_empty() {
             return false;
         }
+        if self.zones.contains(".") {
+            return true;
+        }
 
         // Normalize the domain (lowercase, ensure it ends with a dot)
         let mut normalized = domain.to_lowercase();
@@ -152,6 +155,16 @@ mod tests {
         assert!(zones.is_nonexistent("invalid.org"));
         assert!(!zones.is_nonexistent("other.com"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_root_zone_matches_every_name() -> io::Result<()> {
+        let mut file = NamedTempFile::new()?;
+        writeln!(file, ".")?;
+        let zones = NxZones::load_from_file(file.path())?;
+
+        assert!(zones.is_nonexistent("example.com"));
         Ok(())
     }
 }

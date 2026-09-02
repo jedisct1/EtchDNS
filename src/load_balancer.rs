@@ -109,6 +109,7 @@ pub async fn select_upstream_server<'a>(
 
             // Get all resolvers sorted by speed (fastest first)
             let resolvers_by_speed = stats.get_resolvers_by_speed().await;
+            let global_stats = stats.get_stats().await;
 
             // If we don't have any stats yet, fall back to random
             if resolvers_by_speed.is_empty() {
@@ -146,9 +147,12 @@ pub async fn select_upstream_server<'a>(
                                 );
                             }
                         } else {
-                            // If we don't have stats for this server, include it
-                            eligible_servers.push(server);
-                            debug!("Server {server} has no stats, including it as eligible");
+                            if global_stats.get_resolver_stats(&addr).is_none() {
+                                eligible_servers.push(server);
+                                debug!("Server {server} has no stats, including it as eligible");
+                            } else {
+                                debug!("Server {server} has no successful probes, excluding it");
+                            }
                         }
                     }
                     Err(_) => {
@@ -175,8 +179,6 @@ pub async fn select_upstream_server<'a>(
             }
 
             // Get the global stats first (before using thread_rng)
-            let global_stats = stats.get_stats().await;
-
             // We have at least two eligible servers, choose two randomly and pick the faster one
             let mut rng = rng();
 
@@ -310,6 +312,34 @@ mod tests {
 
         assert!(server.is_some());
         assert_eq!(server.unwrap(), &"127.0.0.2:53".to_string());
+    }
+
+    #[tokio::test]
+    async fn test_failed_only_resolver_is_not_fastest() {
+        let upstream_servers = vec!["127.0.0.1:53".to_string(), "127.0.0.2:53".to_string()];
+        let stats = Arc::new(SharedStats::new());
+        let failed = upstream_servers[0].parse::<SocketAddr>().unwrap();
+        let healthy = upstream_servers[1].parse::<SocketAddr>().unwrap();
+        stats.record_failure(failed).await;
+        stats
+            .record_success(healthy, Duration::from_millis(10))
+            .await;
+
+        let fastest = select_upstream_server(
+            &upstream_servers,
+            LoadBalancingStrategy::Fastest,
+            Some(&stats),
+        )
+        .await;
+        let p2 = select_upstream_server(
+            &upstream_servers,
+            LoadBalancingStrategy::PowerOfTwo,
+            Some(&stats),
+        )
+        .await;
+
+        assert_eq!(fastest, Some(&upstream_servers[1]));
+        assert_eq!(p2, Some(&upstream_servers[1]));
     }
 
     #[tokio::test]

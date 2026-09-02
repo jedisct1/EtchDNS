@@ -179,6 +179,7 @@ impl GlobalStats {
         let mut resolvers: Vec<(SocketAddr, f64)> = self
             .resolver_stats
             .iter()
+            .filter(|(_, stats)| stats.success_count > 0)
             .map(|(addr, stats)| (*addr, stats.avg_response_time_ms))
             .collect();
 

@@ -311,7 +311,7 @@ impl QueryManager {
     /// Internal implementation of submit_query with client IP
     async fn submit_query_internal_with_client(
         &self,
-        key: DNSKey,
+        mut key: DNSKey,
         query_data: Vec<u8>,
         resolver: impl Fn(Vec<u8>) -> futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
         + Send
@@ -319,6 +319,10 @@ impl QueryManager {
         + 'static,
         client_ip: &str,
     ) -> EtchDnsResult<broadcast::Receiver<DnsResponse>> {
+        if self.enable_ecs {
+            key.set_client_subnet(client_ip, self.ecs_prefix_v4, self.ecs_prefix_v6);
+        }
+
         // Record client query in stats
         if let Some(stats) = &self.stats {
             stats.record_client_query().await;
@@ -525,6 +529,12 @@ impl QueryManager {
                                     // Check if we have a cached entry (even expired)
                                     if let Some(cache) = &self_clone.cache
                                         && let Some(cached_response) = cache.get(&key_clone)
+                                        && cached_response.is_expired()
+                                        && std::time::SystemTime::now()
+                                            .duration_since(cached_response.expires_at)
+                                            .is_ok_and(|age| {
+                                                age.as_secs() <= self_clone.serve_stale_grace_time
+                                            })
                                     {
                                         return Self::handle_stale_cache_entry(
                                             &key_clone,
@@ -533,7 +543,6 @@ impl QueryManager {
                                             &response_sender_clone,
                                             &in_flight_queries_arc,
                                             &query_slab_arc,
-                                            cache,
                                             "SERVFAIL response",
                                         )
                                         .await;
@@ -602,7 +611,6 @@ impl QueryManager {
                                                 &response_sender_clone,
                                                 &in_flight_queries_arc,
                                                 &query_slab_arc,
-                                                cache,
                                                 &format!("upstream error: {e}"),
                                             )
                                             .await;
@@ -655,7 +663,6 @@ impl QueryManager {
                                             &response_sender_clone,
                                             &in_flight_queries_arc,
                                             &query_slab_arc,
-                                            cache,
                                             &format!("timeout (expired {expired_ago} seconds ago)"),
                                         )
                                         .await;
@@ -733,7 +740,6 @@ impl QueryManager {
         response_sender: &broadcast::Sender<DnsResponse>,
         in_flight_queries_arc: &Arc<Mutex<HashMap<DNSKey, InflightQuery>>>,
         query_slab_arc: &Arc<Mutex<Slab<DNSKey>>>,
-        cache: &crate::cache::SyncDnsCache,
         reason: &str,
     ) -> DnsResponse {
         log::debug!(
@@ -764,12 +770,6 @@ impl QueryManager {
             data: response_data,
             error: None,
         };
-
-        // Update the cache with the new TTL
-        let ttl_duration = std::time::Duration::from_secs(serve_stale_ttl as u64);
-        let updated_cached_response =
-            crate::cache::CachedResponse::new(response.data.clone(), ttl_duration);
-        cache.insert(key.clone(), updated_cached_response);
 
         // Send the response to all receivers
         if let Err(e) = response_sender.send(response.clone()) {
@@ -915,24 +915,18 @@ impl QueryManager {
 
                     // If not authoritative, adjust the TTL based on remaining time
                     if !self.authoritative_dns {
-                        // Calculate remaining TTL in seconds
-                        let remaining_ttl = match cached_response
-                            .expires_at
-                            .duration_since(std::time::SystemTime::now())
-                        {
-                            Ok(remaining) => remaining.as_secs().min(u32::MAX as u64) as u32,
-                            Err(_) => 0, // If expiration is in the past, use 0
-                        };
+                        let elapsed = std::time::SystemTime::now()
+                            .duration_since(cached_response.cached_at)
+                            .unwrap_or_default()
+                            .as_secs()
+                            .min(u32::MAX as u64) as u32;
 
-                        // Update the TTL in the response
                         if let Err(e) =
-                            crate::dns_parser::change_ttl(&mut response_data, remaining_ttl)
+                            crate::dns_parser::decrement_ttl(&mut response_data, elapsed)
                         {
                             log::debug!("Failed to update TTL in cached response: {e}");
                         } else {
-                            log::debug!(
-                                "Adjusted TTL in cached response to {remaining_ttl} seconds"
-                            );
+                            log::debug!("Adjusted cached response TTLs by {elapsed} seconds");
                         }
                     }
 
@@ -983,6 +977,15 @@ impl QueryManager {
         key: &DNSKey,
         response_data: &[u8],
     ) {
+        if crate::dns_parser::rcode(response_data) == crate::dns_processor::DNS_RCODE_SERVFAIL {
+            log::debug!("Not caching SERVFAIL response for {}", key.name);
+            return;
+        }
+        if crate::dns_parser::is_truncated(response_data) {
+            log::debug!("Not caching truncated response for {}", key.name);
+            return;
+        }
+
         // Extract the minimum TTL from the response
         let extracted_ttl = match crate::dns_parser::extract_min_ttl(response_data) {
             Ok(Some(ttl)) => ttl,
@@ -1231,6 +1234,10 @@ mod tests {
             qtype: 1,  // A record
             qclass: 1, // IN
             dnssec: false,
+            recursion_desired: true,
+            checking_disabled: false,
+            authenticated_data: false,
+            client_subnet: None,
         };
 
         // Create a fake DNS response (just some valid-looking data)
@@ -1259,6 +1266,7 @@ mod tests {
         let expiry_time = std::time::SystemTime::now() - Duration::from_secs(100);
         let cached_response = CachedResponse {
             data: fake_response.clone(),
+            cached_at: expiry_time - Duration::from_secs(60),
             expires_at: expiry_time,
         };
         cache.insert(key.clone(), cached_response);
@@ -1344,6 +1352,10 @@ mod tests {
             qtype: 1,
             qclass: 1,
             dnssec: false,
+            recursion_desired: true,
+            checking_disabled: false,
+            authenticated_data: false,
+            client_subnet: None,
         };
 
         // Create a query packet
@@ -1411,6 +1423,10 @@ mod tests {
             qtype: 1,
             qclass: 1,
             dnssec: false,
+            recursion_desired: true,
+            checking_disabled: false,
+            authenticated_data: false,
+            client_subnet: None,
         };
 
         // Create a fake response
@@ -1425,6 +1441,7 @@ mod tests {
         let expiry_time = std::time::SystemTime::now() - Duration::from_secs(120);
         let cached_response = CachedResponse {
             data: fake_response,
+            cached_at: expiry_time - Duration::from_secs(60),
             expires_at: expiry_time,
         };
         cache.insert(key.clone(), cached_response);
@@ -1436,9 +1453,12 @@ mod tests {
             0x01,
         ];
 
-        // Create a failing resolver
-        let failing_resolver = |_data: Vec<u8>| {
-            Box::pin(async { Err(DnsError::UpstreamTimeout) })
+        // Create a resolver that returns SERVFAIL
+        let failing_resolver = |mut data: Vec<u8>| {
+            crate::dns_parser::set_qr(&mut data, true).unwrap();
+            crate::dns_parser::set_rcode(&mut data, crate::dns_processor::DNS_RCODE_SERVFAIL)
+                .unwrap();
+            Box::pin(async move { Ok(data) })
                 as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
         };
 
@@ -1451,14 +1471,73 @@ mod tests {
         // Wait for the response
         let response = receiver.recv().await.expect("Failed to receive response");
 
-        // Verify that we got an error (stale cache is outside grace period)
-        assert!(
-            response.error.is_some(),
-            "Expected an error when stale cache is outside grace period"
+        assert!(response.error.is_none());
+        assert_eq!(
+            crate::dns_parser::rcode(&response.data),
+            crate::dns_processor::DNS_RCODE_SERVFAIL,
+            "Expected the upstream SERVFAIL instead of stale data"
         );
-        assert!(
-            response.data.is_empty(),
-            "Expected empty data when stale cache is outside grace period"
+    }
+
+    #[test]
+    fn test_truncated_response_is_not_cached() {
+        let manager = QueryManager::new(
+            10,
+            1,
+            512,
+            Arc::new(SharedStats::new()),
+            LoadBalancingStrategy::Random,
+            false,
+            0,
+            30,
+            1,
+            1,
+            false,
+            24,
+            56,
+            true,
         );
+        let cache = create_dns_cache(10);
+        let key = DNSKey::new("example.com".to_string(), 1, 1, false).unwrap();
+        let response = vec![
+            0x12, 0x34, 0x83, 0x80, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01,
+        ];
+
+        manager.cache_dns_response(&cache, &key, &response);
+
+        assert!(cache.get(&key).is_none());
+    }
+
+    #[test]
+    fn test_servfail_response_is_not_cached() {
+        let manager = QueryManager::new(
+            10,
+            1,
+            512,
+            Arc::new(SharedStats::new()),
+            LoadBalancingStrategy::Random,
+            false,
+            0,
+            30,
+            1,
+            1,
+            false,
+            24,
+            56,
+            true,
+        );
+        let cache = create_dns_cache(10);
+        let key = DNSKey::new("example.com".to_string(), 1, 1, false).unwrap();
+        let response = vec![
+            0x12, 0x34, 0x81, 0x82, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01,
+        ];
+
+        manager.cache_dns_response(&cache, &key, &response);
+
+        assert!(cache.get(&key).is_none());
     }
 }

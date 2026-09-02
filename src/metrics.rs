@@ -4,13 +4,13 @@ use http_body_util::Full;
 use hyper::{Request, Response, StatusCode, server::conn::http1};
 use hyper_util::rt::TokioIo;
 use log::info;
-use slabigator::Slab;
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 
 // Global server start time to calculate uptime
 static START_TIME: OnceLock<SystemTime> = OnceLock::new();
@@ -267,8 +267,8 @@ async fn handle_request(
     stats: Arc<SharedStats>,
     metrics_path: String,
     query_manager: Option<Arc<crate::query_manager::QueryManager>>,
-    udp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
-    tcp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
+    active_udp_clients: Option<Arc<AtomicUsize>>,
+    tcp_connection_limit: Option<(Arc<Semaphore>, usize)>,
     dns_cache: Option<Arc<crate::cache::SyncDnsCache>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
@@ -284,15 +284,14 @@ async fn handle_request(
         };
 
         // Get the number of active UDP clients
-        let active_udp_clients = match &udp_clients_slab {
-            Some(slab) => slab.lock().await.len(),
-            None => 0, // Default to 0 if slab isn't available
-        };
+        let active_udp_clients = active_udp_clients
+            .as_ref()
+            .map_or(0, |count| count.load(Ordering::Relaxed));
 
         // Get the number of active TCP clients
-        let active_tcp_clients = match &tcp_clients_slab {
-            Some(slab) => slab.lock().await.len(),
-            None => 0, // Default to 0 if slab isn't available
+        let active_tcp_clients = match &tcp_connection_limit {
+            Some((semaphore, capacity)) => capacity.saturating_sub(semaphore.available_permits()),
+            None => 0,
         };
 
         // Get cache metrics if available
@@ -328,8 +327,8 @@ pub async fn start_metrics_server(
     stats: Arc<SharedStats>,
     max_connections: usize,
     query_manager: Option<Arc<crate::query_manager::QueryManager>>,
-    udp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
-    tcp_clients_slab: Option<Arc<Mutex<Slab<tokio::sync::oneshot::Sender<()>>>>>,
+    active_udp_clients: Option<Arc<AtomicUsize>>,
+    tcp_connection_limit: Option<(Arc<Semaphore>, usize)>,
     dns_cache: Option<Arc<crate::cache::SyncDnsCache>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a TCP listener
@@ -350,8 +349,8 @@ pub async fn start_metrics_server(
         let metrics_path = metrics_path.clone();
         let semaphore = semaphore.clone();
         let query_manager = query_manager.clone();
-        let udp_clients_slab = udp_clients_slab.clone();
-        let tcp_clients_slab = tcp_clients_slab.clone();
+        let active_udp_clients = active_udp_clients.clone();
+        let tcp_connection_limit = tcp_connection_limit.clone();
         let dns_cache = dns_cache.clone();
 
         // Spawn a task to handle the connection
@@ -370,8 +369,8 @@ pub async fn start_metrics_server(
                 let stats = stats.clone();
                 let metrics_path = metrics_path.clone();
                 let query_manager = query_manager.clone();
-                let udp_clients_slab = udp_clients_slab.clone();
-                let tcp_clients_slab = tcp_clients_slab.clone();
+                let active_udp_clients = active_udp_clients.clone();
+                let tcp_connection_limit = tcp_connection_limit.clone();
                 let dns_cache = dns_cache.clone();
                 async move {
                     handle_request(
@@ -379,8 +378,8 @@ pub async fn start_metrics_server(
                         stats,
                         metrics_path,
                         query_manager,
-                        udp_clients_slab,
-                        tcp_clients_slab,
+                        active_udp_clients,
+                        tcp_connection_limit,
                         dns_cache,
                     )
                     .await

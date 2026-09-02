@@ -63,6 +63,9 @@ impl AllowedZones {
         if self.zones.is_empty() {
             return true;
         }
+        if self.zones.contains(".") {
+            return true;
+        }
 
         // Normalize the domain (lowercase, ensure it ends with a dot)
         let mut normalized = domain.to_lowercase();
@@ -152,6 +155,16 @@ mod tests {
         assert!(zones.is_allowed("test.org"));
         assert!(!zones.is_allowed("other.com"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_root_zone_allows_every_name() -> io::Result<()> {
+        let mut file = NamedTempFile::new()?;
+        writeln!(file, ".")?;
+        let zones = AllowedZones::load_from_file(file.path())?;
+
+        assert!(zones.is_allowed("example.com"));
         Ok(())
     }
 }

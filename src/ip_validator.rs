@@ -153,35 +153,12 @@ impl IpValidator {
 
     /// Validate an IP address and port string in format "ip:port"
     pub fn validate_socket_addr_str(&self, addr_str: &str) -> IpValidationResult<(IpAddr, u16)> {
-        // Split the address into IP and port
-        let parts: Vec<&str> = addr_str.split(':').collect();
-
-        if parts.len() < 2 {
-            return Err(IpValidationError::InvalidFormat(
-                "Missing port in socket address".to_string(),
-            ));
-        }
-
-        // The last part is the port
-        let port = parts
-            .last()
-            .unwrap()
-            .parse::<u16>()
-            .map_err(|_| IpValidationError::InvalidFormat("Invalid port number".to_string()))?;
-
-        // Everything before the last part is the IP
-        let ip_str = parts[..parts.len() - 1].join(":");
-        let ip_str = if ip_str.starts_with('[') && ip_str.ends_with(']') {
-            &ip_str[1..ip_str.len() - 1]
-        } else {
-            &ip_str
-        };
-        let ip = self.validate_ip_str(ip_str)?;
-
-        // Validate the port
-        self.validate_port(port)?;
-
-        Ok((ip, port))
+        let addr = addr_str.parse::<std::net::SocketAddr>().map_err(|e| {
+            IpValidationError::InvalidFormat(format!("Could not parse socket address: {e}"))
+        })?;
+        let ip = self.validate_ip(addr.ip())?;
+        self.validate_port(addr.port())?;
+        Ok((ip, addr.port()))
     }
 
     /// Validate an IP address
@@ -713,6 +690,10 @@ mod tests {
         assert!(custom_validator.is_valid_socket_addr("8.8.8.8:8500")); // In range
         assert!(custom_validator.is_valid_socket_addr("8.8.8.8:9000")); // Upper bound
         assert!(!custom_validator.is_valid_socket_addr("8.8.8.8:9001")); // Just above range
+
+        let permissive = IpValidator::permissive();
+        assert!(permissive.is_valid_socket_addr("[2606:4700:4700::1111]:8080"));
+        assert!(!permissive.is_valid_socket_addr("2606:4700:4700::1111:8080"));
     }
 
     #[test]
