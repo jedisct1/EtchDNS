@@ -5,7 +5,7 @@ use base64::{Engine as _, engine::general_purpose};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::{Method, Request, Response, StatusCode, header, server::conn::http1};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use log::{debug, error, info, warn};
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -157,12 +157,14 @@ async fn handle_doh_post_request(
         .unwrap_or("");
 
     if content_type == "application/dns-message" {
-        // Read the request body, enforcing the configured DNS packet size limit
-        match Limited::new(req.into_body(), dns_packet_len_max)
-            .collect()
-            .await
-        {
-            Ok(bytes) => {
+        // Limit the size and the time, so that a slow client can't hold its connection forever
+        let body = Limited::new(req.into_body(), dns_packet_len_max).collect();
+        match tokio::time::timeout(std::time::Duration::from_secs(server_timeout), body).await {
+            Err(_) => Ok(create_error_response(
+                "Request Timeout: DNS message was not received in time",
+                StatusCode::REQUEST_TIMEOUT,
+            )),
+            Ok(Ok(bytes)) => {
                 // Process the DNS message
                 process_dns_message(
                     bytes.to_bytes().to_vec(),
@@ -176,11 +178,13 @@ async fn handle_doh_post_request(
                 )
                 .await
             }
-            Err(e) if e.downcast_ref::<LengthLimitError>().is_some() => Ok(create_error_response(
-                "Payload Too Large: DNS message exceeds configured maximum size",
-                StatusCode::PAYLOAD_TOO_LARGE,
-            )),
-            Err(e) => {
+            Ok(Err(e)) if e.downcast_ref::<LengthLimitError>().is_some() => {
+                Ok(create_error_response(
+                    "Payload Too Large: DNS message exceeds configured maximum size",
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                ))
+            }
+            Ok(Err(e)) => {
                 error!("Failed to read request body: {e}");
                 Ok(create_error_response(
                     "Bad Request: Failed to read request body",
@@ -271,10 +275,10 @@ fn create_dns_response(response_data: &[u8]) -> Response<Full<Bytes>> {
 
 /// Add HTTP caching headers to a DNS response
 fn add_cache_headers(response: &mut Response<Full<Bytes>>, dns_data: &[u8]) {
-    // Extract the minimum TTL from the DNS response, with a 1 second minimum
+    // RFC 8484: HTTP caches must not keep an answer longer than its smallest TTL
     let cache_ttl = match crate::dns_parser::extract_min_ttl(dns_data) {
-        Ok(Some(ttl)) => std::cmp::max(ttl, 1), // Minimum of 1 second
-        _ => 10,                                // Default to 10 seconds if no TTL found
+        Ok(Some(ttl)) => ttl,
+        _ => 10, // Default to 10 seconds if no TTL found
     };
 
     // Add Cache-Control header
@@ -304,7 +308,7 @@ fn add_cache_headers(response: &mut Response<Full<Bytes>>, dns_data: &[u8]) {
 
 /// Start the DNS-over-HTTPS (DoH) server
 pub async fn start_doh_server(
-    addr: SocketAddr,
+    listener: TcpListener,
     query_manager: Arc<QueryManager>,
     upstream_servers: Vec<String>,
     server_timeout: u64,
@@ -316,8 +320,7 @@ pub async fn start_doh_server(
     ip_validator: Option<Arc<crate::ip_validator::IpValidator>>,
     enable_strict_ip_validation: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Create a TCP listener
-    let listener = TcpListener::bind(addr).await?;
+    let addr = listener.local_addr()?;
     info!("DoH server listening on {addr}");
 
     // Create a semaphore to limit concurrent connections
@@ -326,7 +329,7 @@ pub async fn start_doh_server(
     // Accept connections
     loop {
         // Accept a connection
-        let (stream, client_addr) = listener.accept().await?;
+        let (stream, client_addr) = crate::net::accept_with_retry(&listener, "DoH").await;
         let io = TokioIo::new(stream);
 
         // Clone the values we need for this connection
@@ -450,7 +453,96 @@ async fn handle_http_connection(
         }
     });
 
-    if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
-        error!("Error serving DoH connection from {client_addr}: {err}");
+    if let Err(err) = http1_builder().serve_connection(io, service).await {
+        if err.is_timeout() {
+            debug!("Closing idle DoH connection from {client_addr}: {err}");
+        } else {
+            error!("Error serving DoH connection from {client_addr}: {err}");
+        }
+    }
+}
+
+/// The timer lets hyper close connections that never send a request
+fn http1_builder() -> http1::Builder {
+    let mut builder = http1::Builder::new();
+    builder.timer(TokioTimer::new());
+    builder
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn test_connection_without_request_is_closed() {
+        let (client, server) = tokio::io::duplex(64);
+        let service = hyper::service::service_fn(|_req| async {
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+        });
+        let started = tokio::time::Instant::now();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(3600),
+            http1_builder().serve_connection(TokioIo::new(server), service),
+        )
+        .await;
+
+        assert!(matches!(result, Ok(Err(ref e)) if e.is_timeout()));
+        assert!(started.elapsed() >= Duration::from_secs(30));
+        drop(client);
+    }
+
+    #[tokio::test]
+    async fn test_stalled_request_body_does_not_hold_the_connection() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, client_addr) = listener.accept().await.unwrap();
+        client
+            .write_all(
+                b"POST /dns-query HTTP/1.1\r\nHost: localhost\r\n\
+                  Content-Type: application/dns-message\r\nContent-Length: 100\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let connection = handle_http_connection(
+            TokioIo::new(stream),
+            client_addr,
+            Arc::new(QueryManager::for_tests(1, 4096, true)),
+            vec!["127.0.0.1:9".to_string()],
+            1,
+            4096,
+            Arc::new(SharedStats::new()),
+            crate::load_balancer::LoadBalancingStrategy::Random,
+            None,
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), connection)
+                .await
+                .is_ok()
+        );
+        drop(client);
+    }
+
+    #[test]
+    fn test_zero_ttl_answer_is_not_cacheable() {
+        let response = [
+            0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01, 0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 192, 0,
+            2, 1,
+        ];
+
+        let http_response = create_dns_response(&response);
+
+        assert_eq!(
+            http_response.headers()[header::CACHE_CONTROL],
+            "public, max-age=0"
+        );
     }
 }

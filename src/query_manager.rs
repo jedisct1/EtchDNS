@@ -99,7 +99,7 @@ pub struct QueryManager {
 /// Represents a task handling a DNS query
 struct QueryTask {
     /// The task handle
-    task_handle: JoinHandle<DnsResponse>,
+    task_handle: JoinHandle<()>,
     /// The sender for broadcasting the response to all interested clients
     response_sender: broadcast::Sender<DnsResponse>,
 }
@@ -201,6 +201,31 @@ impl QueryManager {
             ecs_prefix_v6,
             spoof_protection,
         }
+    }
+
+    /// A manager without cache, filters, or stale answers, for tests
+    #[cfg(test)]
+    pub(crate) fn for_tests(
+        server_timeout: u64,
+        dns_packet_len_max: usize,
+        spoof_protection: bool,
+    ) -> Self {
+        Self::new(
+            10,
+            server_timeout,
+            dns_packet_len_max,
+            Arc::new(crate::stats::SharedStats::new()),
+            LoadBalancingStrategy::Random,
+            false,
+            0,
+            30,
+            1,
+            1,
+            false,
+            24,
+            56,
+            spoof_protection,
+        )
     }
 
     /// Set the statistics tracker
@@ -478,7 +503,7 @@ impl QueryManager {
             let timeout_duration = std::time::Duration::from_secs(server_timeout);
 
             // Resolve the query with a timeout
-            let response =
+            let response = 'resolve: {
                 match tokio::time::timeout(timeout_duration, resolver(query_data.clone())).await {
                     Ok(result) => {
                         // The resolver completed within the timeout
@@ -491,29 +516,10 @@ impl QueryManager {
                                         "Received invalid response packet for {}",
                                         key_clone.name
                                     );
-                                    // Create an error response with empty data
-                                    #[allow(clippy::redundant_clone)]
-                                    let response = DnsResponse {
+                                    break 'resolve DnsResponse {
                                         data: Vec::new(),
                                         error: Some("Invalid response packet".to_string()),
                                     };
-
-                                    // Send the response to all receivers
-                                    if let Err(e) = response_sender_clone.send(response.clone()) {
-                                        // This can happen if all receivers have been dropped
-                                        log::debug!("Failed to send invalid response error: {e}");
-                                    }
-
-                                    // Remove the query from the in-flight map and slab
-                                    Self::remove_query_from_map_and_slab(
-                                        &key_clone,
-                                        &in_flight_queries_arc,
-                                        &query_slab_arc,
-                                    )
-                                    .await;
-
-                                    // Return the response
-                                    return response;
                                 }
                                 // Check if the response is a SERVFAIL and we should serve stale entries
                                 #[allow(clippy::nonminimal_bool)]
@@ -536,16 +542,12 @@ impl QueryManager {
                                                 age.as_secs() <= self_clone.serve_stale_grace_time
                                             })
                                     {
-                                        return Self::handle_stale_cache_entry(
+                                        break 'resolve Self::handle_stale_cache_entry(
                                             &key_clone,
                                             &cached_response,
                                             self_clone.serve_stale_ttl,
-                                            &response_sender_clone,
-                                            &in_flight_queries_arc,
-                                            &query_slab_arc,
                                             "SERVFAIL response",
-                                        )
-                                        .await;
+                                        );
                                     }
                                 }
 
@@ -567,18 +569,10 @@ impl QueryManager {
                                 );
 
                                 // Create a successful response
-                                let response = DnsResponse {
+                                DnsResponse {
                                     data: response_data_with_flags,
                                     error: None,
-                                };
-
-                                // Send the response to all receivers
-                                if let Err(e) = response_sender_clone.send(response.clone()) {
-                                    // This can happen if all receivers have been dropped
-                                    log::debug!("Failed to send successful DNS response: {e}");
                                 }
-
-                                response
                             }
                             Err(e) => {
                                 // Log the error
@@ -604,33 +598,21 @@ impl QueryManager {
 
                                         // Check if the entry is within the grace period
                                         if expired_ago <= self_clone.serve_stale_grace_time {
-                                            return Self::handle_stale_cache_entry(
+                                            break 'resolve Self::handle_stale_cache_entry(
                                                 &key_clone,
                                                 &cached_response,
                                                 self_clone.serve_stale_ttl,
-                                                &response_sender_clone,
-                                                &in_flight_queries_arc,
-                                                &query_slab_arc,
                                                 &format!("upstream error: {e}"),
-                                            )
-                                            .await;
+                                            );
                                         }
                                     }
                                 }
 
                                 // No stale entry available, create an error response
-                                let response = DnsResponse {
+                                DnsResponse {
                                     data: Vec::new(),
                                     error: Some(format!("DNS query failed: {e}")),
-                                };
-
-                                // Send the response to all receivers
-                                if let Err(e) = response_sender_clone.send(response.clone()) {
-                                    // This can happen if all receivers have been dropped
-                                    log::debug!("Failed to send error DNS response: {e}");
                                 }
-
-                                response
                             }
                         }
                     }
@@ -656,71 +638,36 @@ impl QueryManager {
 
                                     // Check if the entry is within the grace period
                                     if expired_ago <= self_clone.serve_stale_grace_time {
-                                        return Self::handle_stale_cache_entry(
+                                        break 'resolve Self::handle_stale_cache_entry(
                                             &key_clone,
                                             &cached_response,
                                             self_clone.serve_stale_ttl,
-                                            &response_sender_clone,
-                                            &in_flight_queries_arc,
-                                            &query_slab_arc,
                                             &format!("timeout (expired {expired_ago} seconds ago)"),
-                                        )
-                                        .await;
+                                        );
                                     }
                                 }
                             }
                         }
 
                         // Create a timeout error response
-                        let response = DnsResponse {
+                        DnsResponse {
                             data: Vec::new(),
                             error: Some(format!(
                                 "DNS query timed out after {server_timeout} seconds"
                             )),
-                        };
-
-                        // Send the response to all receivers
-                        if let Err(e) = response_sender_clone.send(response.clone()) {
-                            // This can happen if all receivers have been dropped
-                            log::debug!("Failed to send timeout DNS response: {e}");
                         }
-
-                        response
-                    }
-                };
-
-            // Response has already been broadcast to all receivers
-
-            // Remove the query from the in-flight map and slab
-            // We need to acquire both locks to ensure atomicity
-            let mut in_flight_queries = in_flight_queries_arc.lock().await;
-            let mut query_slab = query_slab_arc.lock().await;
-
-            // Check if the key exists in the map
-            if let Some(inflight_query) = in_flight_queries.remove(&key_clone) {
-                // Remove from the slab using the stored slab ID
-                match query_slab.remove(inflight_query.slab_id) {
-                    Ok(_) => {
-                        // No need to track in-flight queries counter, as we directly access slab length instead
-
-                        log::debug!(
-                            "Successfully removed query from both map and slab, slab size: {}, map size: {}",
-                            query_slab.len(),
-                            in_flight_queries.len()
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Failed to remove query from slab: {e}");
-                        log::warn!("Map and slab may be out of sync due to slab removal error");
                     }
                 }
-            } else {
-                // Not found in the map
-                log::warn!("Attempted to remove non-existent query from map");
-            }
+            };
 
-            // Return the response
-            response
+            Self::finish_query(
+                &key_clone,
+                response,
+                &response_sender_clone,
+                &in_flight_queries_arc,
+                &query_slab_arc,
+            )
+            .await;
         });
 
         // Create and return the QueryTask
@@ -733,13 +680,10 @@ impl QueryManager {
     }
 
     /// Helper function to handle stale cache entries
-    async fn handle_stale_cache_entry(
+    fn handle_stale_cache_entry(
         key: &DNSKey,
         cached_response: &crate::cache::CachedResponse,
         serve_stale_ttl: u32,
-        response_sender: &broadcast::Sender<DnsResponse>,
-        in_flight_queries_arc: &Arc<Mutex<HashMap<DNSKey, InflightQuery>>>,
-        query_slab_arc: &Arc<Mutex<Slab<DNSKey>>>,
         reason: &str,
     ) -> DnsResponse {
         log::debug!(
@@ -765,23 +709,10 @@ impl QueryManager {
         // Set the appropriate DNS response flags
         crate::dns_processor::set_response_flags(&mut response_data, authoritative_dns);
 
-        // Create the stale response
-        let response = DnsResponse {
+        DnsResponse {
             data: response_data,
             error: None,
-        };
-
-        // Send the response to all receivers
-        if let Err(e) = response_sender.send(response.clone()) {
-            // This can happen if all receivers have been dropped
-            log::debug!("Failed to send stale DNS response after {reason}: {e}");
         }
-
-        // Remove the query from the in-flight map and slab
-        Self::remove_query_from_map_and_slab(key, in_flight_queries_arc, query_slab_arc).await;
-
-        // Return the response
-        response
     }
 
     /// Manages in-flight queries and handles query limits
@@ -977,8 +908,13 @@ impl QueryManager {
         key: &DNSKey,
         response_data: &[u8],
     ) {
-        if crate::dns_parser::rcode(response_data) == crate::dns_processor::DNS_RCODE_SERVFAIL {
-            log::debug!("Not caching SERVFAIL response for {}", key.name);
+        // Other codes are about the query or the server, not the name, so other clients
+        // must not get them
+        let rcode = crate::dns_parser::rcode(response_data);
+        if rcode != crate::dns_processor::DNS_RCODE_NOERROR
+            && rcode != crate::dns_processor::DNS_RCODE_NXDOMAIN
+        {
+            log::debug!("Not caching response with RCODE {rcode} for {}", key.name);
             return;
         }
         if crate::dns_parser::is_truncated(response_data) {
@@ -1140,9 +1076,14 @@ impl QueryManager {
         None
     }
 
-    /// Helper function to remove a query from the in-flight map and slab
-    async fn remove_query_from_map_and_slab(
+    /// Removes a finished query and sends its response to every client waiting for it.
+    ///
+    /// Both happen under the in-flight lock, so a client either joins in time to get the
+    /// response or no longer finds the query and starts a new one.
+    async fn finish_query(
         key: &DNSKey,
+        response: DnsResponse,
+        response_sender: &broadcast::Sender<DnsResponse>,
         in_flight_queries_arc: &Arc<Mutex<HashMap<DNSKey, InflightQuery>>>,
         query_slab_arc: &Arc<Mutex<Slab<DNSKey>>>,
     ) {
@@ -1169,6 +1110,11 @@ impl QueryManager {
         } else {
             // Not found in the map
             log::warn!("Attempted to remove non-existent query from map");
+        }
+
+        if let Err(e) = response_sender.send(response) {
+            // This can happen if all receivers have been dropped
+            log::debug!("Failed to send DNS response: {e}");
         }
     }
 
@@ -1480,64 +1426,93 @@ mod tests {
     }
 
     #[test]
-    fn test_truncated_response_is_not_cached() {
-        let manager = QueryManager::new(
-            10,
-            1,
-            512,
-            Arc::new(SharedStats::new()),
-            LoadBalancingStrategy::Random,
-            false,
-            0,
-            30,
-            1,
-            1,
-            false,
-            24,
-            56,
-            true,
-        );
+    fn test_uncacheable_responses_are_not_cached() {
+        let manager = QueryManager::for_tests(1, 512, true);
         let cache = create_dns_cache(10);
         let key = DNSKey::new("example.com".to_string(), 1, 1, false).unwrap();
-        let response = vec![
-            0x12, 0x34, 0x83, 0x80, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+        let mut response = vec![
+            0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
             b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
             0x01,
         ];
 
-        manager.cache_dns_response(&cache, &key, &response);
-
-        assert!(cache.get(&key).is_none());
+        // Truncated, then FORMERR, SERVFAIL, NOTIMP and REFUSED
+        for flags in [
+            [0x83, 0x80],
+            [0x81, 0x81],
+            [0x81, 0x82],
+            [0x81, 0x84],
+            [0x81, 0x85],
+        ] {
+            response[2..4].copy_from_slice(&flags);
+            manager.cache_dns_response(&cache, &key, &response);
+            assert!(cache.get(&key).is_none());
+        }
     }
 
-    #[test]
-    fn test_servfail_response_is_not_cached() {
-        let manager = QueryManager::new(
-            10,
-            1,
-            512,
-            Arc::new(SharedStats::new()),
-            LoadBalancingStrategy::Random,
-            false,
-            0,
-            30,
-            1,
-            1,
-            false,
-            24,
-            56,
-            true,
-        );
-        let cache = create_dns_cache(10);
-        let key = DNSKey::new("example.com".to_string(), 1, 1, false).unwrap();
-        let response = vec![
-            0x12, 0x34, 0x81, 0x82, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+    #[tokio::test]
+    async fn test_client_joining_a_finishing_query_gets_its_response() {
+        let query_manager = QueryManager::for_tests(5, 512, true);
+        let query = vec![
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
             b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
             0x01,
         ];
+        let key = DNSKey::from_packet(&query).unwrap();
 
-        manager.cache_dns_response(&cache, &key, &response);
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let release_rx = std::sync::Mutex::new(Some(release_rx));
+        let delayed_resolver = move |mut data: Vec<u8>| {
+            let release = release_rx.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+                crate::dns_parser::set_qr(&mut data, true).unwrap();
+                Ok(data)
+            }) as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+        };
+        let _first = query_manager
+            .submit_query_with_client(
+                key.clone(),
+                query.clone(),
+                delayed_resolver,
+                "192.0.2.1:5353",
+            )
+            .await
+            .unwrap();
 
-        assert!(cache.get(&key).is_none());
+        // The second client waits for the lock while the first query finishes,
+        // so it joins right as the response goes out.
+        let in_flight_guard = query_manager.in_flight_queries.lock().await;
+        let second_manager = query_manager.clone();
+        let mut second = tokio_test::task::spawn(async move {
+            let failing_resolver = |_data: Vec<u8>| {
+                Box::pin(async { Err(DnsError::UpstreamTimeout) })
+                    as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+            };
+            let mut receiver = second_manager
+                .submit_query_with_client(key, query, failing_resolver, "192.0.2.2:5353")
+                .await
+                .unwrap();
+            receiver.recv().await
+        });
+        assert!(second.poll().is_pending());
+        release_tx.send(()).unwrap();
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        drop(in_flight_guard);
+        assert!(second.poll().is_pending());
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        let std::task::Poll::Ready(response) = second.poll() else {
+            panic!("the second client is still waiting");
+        };
+        let response = response.expect("the second client must receive the shared response");
+        assert!(response.error.is_none());
+        assert!(crate::dns_parser::is_response(&response.data));
     }
 }

@@ -295,7 +295,14 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
         an_count as usize + ns_count as usize,
         |_| Ok(()),
     )?;
-    validate_edns_records(packet, additional_offset, ar_count as usize)?;
+    let end_offset = validate_edns_records(packet, additional_offset, ar_count as usize)?;
+
+    // Extra bytes would be read as records once we add our own OPT record to the query
+    if !is_response(packet) && end_offset != packet.len() {
+        return Err(DnsError::InvalidPacket(
+            "Trailing data after the last record".to_string(),
+        ));
+    }
 
     // Check EDNS version if OPT record is present
     if let Some(edns_version) = extract_edns_version(packet)?
@@ -309,7 +316,7 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
     Ok(())
 }
 
-fn validate_edns_records(packet: &[u8], mut offset: usize, arcount: usize) -> DnsResult<()> {
+fn validate_edns_records(packet: &[u8], mut offset: usize, arcount: usize) -> DnsResult<usize> {
     let mut found_opt = false;
 
     for _ in 0..arcount {
@@ -334,7 +341,7 @@ fn validate_edns_records(packet: &[u8], mut offset: usize, arcount: usize) -> Dn
         offset = traverse_rrs(packet, owner_offset, 1, |_| Ok(()))?;
     }
 
-    Ok(())
+    Ok(offset)
 }
 
 /// Returns the transaction ID from the DNS packet
@@ -790,6 +797,12 @@ pub fn qname(packet: &[u8]) -> DnsResult<Vec<u8>> {
                 let label_end = offset.checked_add(label_len).ok_or_else(|| {
                     DnsError::InvalidPacket("Integer overflow calculating label end".to_string())
                 })?;
+                // Otherwise the single label "a.b" would look like the two labels "a" and "b"
+                if packet[offset..label_end].contains(&b'.') {
+                    return Err(DnsError::InvalidDomainName(
+                        "Label contains a dot".to_string(),
+                    ));
+                }
                 qname.extend_from_slice(&packet[offset..label_end]);
                 offset = label_end;
             }
@@ -1020,8 +1033,6 @@ where
             return Err(DnsError::PacketTooShort { offset });
         }
 
-        callback(offset)?;
-
         // Safely read RDLEN
         if offset + 8 >= packet_len {
             return Err(DnsError::PacketTooShort { offset });
@@ -1050,6 +1061,8 @@ where
                 "Record length would exceed packet length".to_string(),
             ));
         }
+
+        callback(offset)?;
 
         // For certain record types that contain domain names in their RDATA,
         // we should validate those domain names too
@@ -1123,8 +1136,6 @@ where
             return Err(DnsError::PacketTooShort { offset });
         }
 
-        callback(packet, offset)?;
-
         // Safely read RDLEN
         if offset + 8 >= packet_len {
             return Err(DnsError::PacketTooShort { offset });
@@ -1153,6 +1164,8 @@ where
                 "Record length would exceed packet length".to_string(),
             ));
         }
+
+        callback(packet, offset)?;
 
         // For certain record types that contain domain names in their RDATA,
         // we should validate those domain names too
@@ -1439,7 +1452,7 @@ pub fn add_edns_client_subnet(
     ecs_option.extend_from_slice(&truncated_address);
 
     // Make sure the packet won't be too large
-    if DNS_MAX_PACKET_SIZE - packet.len() < ecs_option.len() {
+    if DNS_MAX_PACKET_SIZE.saturating_sub(packet.len()) < ecs_option.len() {
         return Err(DnsError::PacketTooLarge {
             size: packet.len(),
             max_size: DNS_MAX_PACKET_SIZE,
@@ -2247,6 +2260,28 @@ mod tests {
     }
 
     #[test]
+    fn test_dot_inside_label_is_rejected() {
+        // The single label "example.com" instead of "example" and "com"
+        let mut dotted = create_test_query();
+        dotted[12] = 11;
+        dotted[20] = b'.';
+
+        assert!(validate_dns_packet(&dotted).is_err());
+    }
+
+    #[test]
+    fn test_query_with_trailing_data_is_rejected() {
+        // An OPT record that ARCOUNT doesn't mention
+        let mut query = create_test_query();
+        add_edns_section(&mut query, 1232).unwrap();
+        set_arcount(&mut query, 0).unwrap();
+        assert!(validate_dns_packet(&query).is_err());
+
+        set_qr(&mut query, true).unwrap();
+        assert!(validate_dns_packet(&query).is_ok());
+    }
+
+    #[test]
     fn test_invalid_opt_layout_is_rejected() {
         let mut duplicate = create_test_query();
         add_edns_section(&mut duplicate, 1232).unwrap();
@@ -2904,5 +2939,33 @@ mod overflow_tests {
         // This should succeed without overflow
         let result = validate_dns_packet(&packet);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ecs_helpers_reject_malformed_packets_without_panicking() {
+        let root_query_with_opt = |rdlen: u16| {
+            let mut packet = vec![
+                0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+                0x02, 0x00, 0x01, 0x00, 0x00, 0x29, 0x04, 0xd0, 0x00, 0x00, 0x00, 0x00,
+            ];
+            packet.extend_from_slice(&rdlen.to_be_bytes());
+            packet
+        };
+
+        // OPT data running past the end of the packet
+        let mut packet = root_query_with_opt(0xffff);
+        packet.extend_from_slice(&[0x00, 0x08]);
+        assert!(extract_edns_client_subnet(&packet).is_err());
+
+        // A packet already over the size limit, because of a large padding option
+        let padding_len = DNS_MAX_PACKET_SIZE;
+        let mut packet = root_query_with_opt((padding_len + 4) as u16);
+        packet.extend_from_slice(&[0x00, 0x0c]);
+        packet.extend_from_slice(&(padding_len as u16).to_be_bytes());
+        packet.resize(packet.len() + padding_len, 0);
+        assert!(matches!(
+            add_edns_client_subnet(&mut packet, "192.0.2.1", 24, 56, 1232),
+            Err(DnsError::PacketTooLarge { .. })
+        ));
     }
 }

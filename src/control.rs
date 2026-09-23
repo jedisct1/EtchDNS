@@ -5,7 +5,6 @@ use hyper_util::rt::TokioIo;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -39,6 +38,11 @@ fn is_domain_in_zone(domain: &str, zone: &str) -> bool {
     // Normalize both domain and zone (lowercase, no trailing dot)
     let normalized_domain = domain.trim_end_matches('.').to_lowercase();
     let normalized_zone = zone.trim_end_matches('.').to_lowercase();
+
+    // Every name is in the root zone
+    if normalized_zone.is_empty() {
+        return true;
+    }
 
     // Check if domain equals zone
     if normalized_domain == normalized_zone {
@@ -412,14 +416,13 @@ async fn handle_request(
 
 /// Start the HTTP control server
 pub async fn start_control_server(
-    addr: SocketAddr,
+    listener: TcpListener,
     control_path: String,
     max_connections: usize,
     dns_cache: Option<Arc<SyncDnsCache>>,
     stats: Option<Arc<SharedStats>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Create a TCP listener
-    let listener = TcpListener::bind(addr).await?;
+    let addr = listener.local_addr()?;
     info!("Control server listening on {addr}, base path: {control_path}");
 
     if dns_cache.is_some() {
@@ -436,7 +439,7 @@ pub async fn start_control_server(
     // Accept connections
     loop {
         // Accept a connection
-        let (stream, client_addr) = listener.accept().await?;
+        let (stream, client_addr) = crate::net::accept_with_retry(&listener, "control").await;
         let io = TokioIo::new(stream);
 
         // Clone the resources for this connection
@@ -491,5 +494,6 @@ mod tests {
         assert!(is_domain_in_zone("WWW.Example.COM.", "example.com."));
         assert!(is_domain_in_zone("example.com", "EXAMPLE.COM."));
         assert!(!is_domain_in_zone("notexample.com", "example.com."));
+        assert!(is_domain_in_zone("www.example.com", "."));
     }
 }

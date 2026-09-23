@@ -120,100 +120,7 @@ impl ServerProber {
 
     /// Probe a single server and return the response time
     async fn probe_server(&self, server_addr: SocketAddr) -> EtchDnsResult<Duration> {
-        // Create a random DNS query
-        let query = self.create_random_query();
-
-        // Create a UDP socket for the probe
-        let socket = UdpSocket::bind(wildcard_address(server_addr))
-            .await
-            .map_err(|e| {
-                DnsError::UpstreamError(format!("Failed to bind socket for probe: {e}"))
-            })?;
-
-        // Start timing
-        let start_time = Instant::now();
-
-        // Send the query
-        socket.send_to(&query, server_addr).await.map_err(|e| {
-            DnsError::UpstreamError(format!("Failed to send probe to {server_addr}: {e}"))
-        })?;
-
-        // Set up a buffer for the response
-        let mut buf = vec![0u8; dns_parser::DNS_MAX_PACKET_SIZE];
-
-        // Wait for a response with timeout
-        match time::timeout(
-            Duration::from_secs(self.probe_timeout),
-            socket.recv_from(&mut buf),
-        )
-        .await
-        {
-            Ok(Ok((len, response_addr))) => {
-                if response_addr != server_addr {
-                    return Err(DnsError::UpstreamError(format!(
-                        "Unexpected probe response source {response_addr}, expected {server_addr}"
-                    ))
-                    .into());
-                }
-
-                if len < 2 || buf[0] != query[0] || buf[1] != query[1] {
-                    return Err(DnsError::UpstreamError(format!(
-                        "Mismatched DNS transaction ID in response from {server_addr}"
-                    ))
-                    .into());
-                }
-
-                // Got a response
-                let response_time = start_time.elapsed();
-
-                // Validate the response
-                if let Err(e) = dns_parser::validate_dns_response(&buf[..len]) {
-                    return Err(DnsError::UpstreamError(format!(
-                        "Invalid DNS response from {server_addr}: {e}"
-                    ))
-                    .into());
-                }
-
-                Ok(response_time)
-            }
-            Ok(Err(e)) => {
-                // Socket error
-                Err(DnsError::UpstreamError(format!(
-                    "Failed to receive response from {server_addr}: {e}"
-                ))
-                .into())
-            }
-            Err(_) => {
-                // Timeout
-                Err(DnsError::UpstreamTimeout.into())
-            }
-        }
-    }
-
-    /// Create a random DNS query
-    fn create_random_query(&self) -> Vec<u8> {
-        // Create a simple query for a common domain
-        // This is a query for google.com with a random transaction ID
-        let mut query = vec![
-            0x00, 0x00, // Transaction ID (will be replaced)
-            0x01, 0x00, // Flags (standard query)
-            0x00, 0x01, // Questions: 1
-            0x00, 0x00, // Answer RRs: 0
-            0x00, 0x00, // Authority RRs: 0
-            0x00, 0x00, // Additional RRs: 0
-            // google.com domain name
-            0x06, b'g', b'o', b'o', b'g', b'l', b'e', 0x03, b'c', b'o', b'm',
-            0x00, // Null terminator
-            0x00, 0x01, // Type: A (Host Address)
-            0x00, 0x01, // Class: IN (Internet)
-        ];
-
-        // Generate a random transaction ID
-        let tid: u16 = rand::rng().random();
-        query[0] = (tid >> 8) as u8;
-        query[1] = tid as u8;
-
-        query
+        probe_server(server_addr, self.probe_timeout).await
     }
 }
 
@@ -242,18 +149,11 @@ pub async fn probe_server(server_addr: SocketAddr, timeout_secs: u64) -> EtchDns
     // Wait for a response with timeout
     match time::timeout(
         Duration::from_secs(timeout_secs),
-        socket.recv_from(&mut buf),
+        crate::resolver::recv_from_peer(&socket, &mut buf, server_addr),
     )
     .await
     {
-        Ok(Ok((len, response_addr))) => {
-            if response_addr != server_addr {
-                return Err(DnsError::UpstreamError(format!(
-                    "Unexpected probe response source {response_addr}, expected {server_addr}"
-                ))
-                .into());
-            }
-
+        Ok(Ok(len)) => {
             if len < 2 || buf[0] != query[0] || buf[1] != query[1] {
                 return Err(DnsError::UpstreamError(format!(
                     "Mismatched DNS transaction ID in response from {server_addr}"
@@ -332,19 +232,9 @@ mod tests {
         assert_eq!(ipv6.port(), 0);
     }
 
-    #[tokio::test]
-    async fn test_create_random_query() {
-        let stats = Arc::new(SharedStats::new());
-        let server_timeout = 5; // 5 seconds
-        let prober = ServerProber::new(
-            vec!["8.8.8.8:53".to_string()],
-            stats,
-            server_timeout,
-            None,
-            None,
-        );
-
-        let query = prober.create_random_query();
+    #[test]
+    fn test_create_random_query() {
+        let query = create_random_query();
 
         // Check that the query is a valid DNS query
         assert!(query.len() > 12); // DNS header is 12 bytes

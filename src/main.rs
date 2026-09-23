@@ -30,6 +30,7 @@ mod hooks;
 mod ip_validator;
 mod load_balancer;
 mod metrics;
+mod net;
 mod nx_zones;
 mod probe;
 mod query_logger;
@@ -1021,16 +1022,10 @@ impl ClientQuery {
 
         // Wait for the response with the initial timeout
         let initial_timeout_duration = tokio::time::Duration::from_secs(initial_timeout);
-        let recv_future = upstream_socket.recv_from(&mut buf);
+        let recv_future = resolver::recv_from_peer(&upstream_socket, &mut buf, upstream_addr);
 
         match tokio::time::timeout(initial_timeout_duration, recv_future).await {
-            Ok(Ok((len, response_addr))) => {
-                if response_addr != upstream_addr {
-                    return Err(DnsError::UpstreamError(format!(
-                        "Unexpected response source {response_addr}, expected {upstream_addr}"
-                    ))
-                    .into());
-                }
+            Ok(Ok(len)) => {
                 // Successfully received a response within the initial timeout
                 let response_time = start_time.elapsed();
                 debug!(
@@ -1084,15 +1079,9 @@ impl ClientQuery {
                     "Timeout waiting for response from upstream server after {initial_timeout} seconds (retrying): {upstream_addr}"
                 );
 
-                // Record the timeout in stats if available
-                if let Some(stats) = &self.stats
-                    && let Ok(addr) = upstream_addr.to_string().parse()
-                {
-                    // Use a reference to avoid cloning
-                    let stats_ref = Arc::clone(stats);
-                    tokio::spawn(async move {
-                        stats_ref.record_timeout(addr).await;
-                    });
+                // Recorded before retrying, so that an answered retry can clear it
+                if let Some(stats) = &self.stats {
+                    stats.record_timeout(upstream_addr).await;
                 }
 
                 // Second attempt
@@ -1110,30 +1099,34 @@ impl ClientQuery {
                 let remaining_timeout = self.server_timeout - initial_timeout;
                 let remaining_timeout_duration =
                     tokio::time::Duration::from_secs(remaining_timeout);
-                let recv_future = upstream_socket.recv_from(&mut buf);
+                let recv_future =
+                    resolver::recv_from_peer(&upstream_socket, &mut buf, upstream_addr);
 
                 match tokio::time::timeout(remaining_timeout_duration, recv_future).await {
-                    Ok(Ok((len, response_addr))) => {
-                        if response_addr != upstream_addr {
-                            return Err(DnsError::UpstreamError(format!(
-                                "Unexpected response source {response_addr}, expected {upstream_addr}"
-                            ))
-                            .into());
-                        }
+                    Ok(Ok(len)) => {
                         // Successfully received a response on the retry
                         debug!(
                             "Received response of size {len} bytes from upstream server (retry attempt): {upstream_addr}"
                         );
 
                         // Process the response
-                        process_response(
+                        let response = process_response(
                             &buf[..len],
                             random_tid,
                             upstream_addr,
                             self.spoof_protection,
                             &query_data,
                         )
-                        .await
+                        .await;
+
+                        // The resolver is fine, but this delay is not a real response time
+                        if response.is_ok()
+                            && let Some(stats) = &self.stats
+                        {
+                            stats.clear_failures(upstream_addr).await;
+                        }
+
+                        response
                     }
                     Ok(Err(e)) => {
                         // Socket error on retry
@@ -1402,6 +1395,18 @@ async fn retry_with_tcp(
 
     debug!("Successfully received DNS response via TCP, size: {response_len}");
     Ok(response_buf)
+}
+
+async fn bind_tcp_listener(
+    addr: SocketAddr,
+    service: &str,
+) -> EtchDnsResult<tokio::net::TcpListener> {
+    tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+        EtchDnsError::SocketBindError(std::io::Error::new(
+            e.kind(),
+            format!("Failed to bind {service} listener to {addr}: {e}"),
+        ))
+    })
 }
 
 /// Trait for different types of clients
@@ -1807,8 +1812,9 @@ impl Client for TCPClient {
 
             // Send the response back to the client
             let mut stream = self.stream.lock().await;
-            match stream.write_all(&tcp_response).await {
-                Ok(_) => {
+            let write_timeout = Duration::from_secs(self.query.server_timeout);
+            match tokio::time::timeout(write_timeout, stream.write_all(&tcp_response)).await {
+                Ok(Ok(_)) => {
                     debug!(
                         "Sent {} bytes back to TCP client {}",
                         response_data.len(),
@@ -1816,9 +1822,14 @@ impl Client for TCPClient {
                     );
                     debug!("Response successfully sent to client {}", self.addr);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     error!("Failed to send response to TCP client {}: {}", self.addr, e);
                     debug!("Error details: {e:?}");
+                }
+                Err(_) => {
+                    error!("Timed out sending response to TCP client {}", self.addr);
+                    // A partly sent response would garble every later one
+                    let _ = stream.shutdown().await;
                 }
             }
         }
@@ -2034,14 +2045,7 @@ async fn main() -> EtchDnsResult<()> {
         udp_sockets.push(Arc::new(udp_socket));
 
         // Bind TCP listener
-        let tcp_listener = tokio::net::TcpListener::bind(socket_addr)
-            .await
-            .map_err(|e| {
-                EtchDnsError::SocketBindError(std::io::Error::new(
-                    e.kind(),
-                    format!("Failed to bind TCP listener to {}: {}", socket_addr, e),
-                ))
-            })?;
+        let tcp_listener = bind_tcp_listener(*socket_addr, "TCP").await?;
         info!(
             "Listening on TCP: {}",
             tcp_listener.local_addr().map_err(|e| {
@@ -2322,6 +2326,25 @@ async fn main() -> EtchDnsResult<()> {
         "Created query manager with a maximum of {max_inflight_queries} in-flight queries, {server_timeout} second timeout, {dns_packet_len_max} byte packet size, and '{load_balancing_strategy}' load balancing strategy"
     );
 
+    // These may use privileged ports, so they must be bound before dropping privileges
+    let metrics_listener = match &config.metrics_address {
+        Some(metrics_addr) => {
+            let metrics_addr = metrics_addr.parse::<SocketAddr>().map_err(|e| {
+                EtchDnsError::Other(format!("Invalid metrics address {metrics_addr}: {e}"))
+            })?;
+            Some(bind_tcp_listener(metrics_addr, "metrics").await?)
+        }
+        None => None,
+    };
+    let mut doh_listeners = Vec::new();
+    for doh_addr in config.doh_socket_addrs()? {
+        doh_listeners.push(bind_tcp_listener(doh_addr, "DoH").await?);
+    }
+    let mut control_listeners = Vec::new();
+    for control_addr in config.control_socket_addrs()? {
+        control_listeners.push(bind_tcp_listener(control_addr, "control").await?);
+    }
+
     // Drop privileges if configured
     if let Some(username) = &config.user {
         info!("Dropping privileges to user: {username}");
@@ -2422,12 +2445,7 @@ async fn main() -> EtchDnsResult<()> {
     }
 
     // Start the HTTP metrics server if configured
-    if let Some(metrics_addr) = &config.metrics_address {
-        // Parse the metrics address
-        let metrics_addr = metrics_addr.parse::<SocketAddr>().map_err(|e| {
-            EtchDnsError::Other(format!("Invalid metrics address {metrics_addr}: {e}"))
-        })?;
-
+    if let Some(metrics_listener) = metrics_listener {
         // Clone the values we need for the metrics server
         let metrics_path = config.metrics_path.clone();
         let stats = global_stats.clone();
@@ -2439,10 +2457,8 @@ async fn main() -> EtchDnsResult<()> {
 
         // Create a task for the metrics server
         let metrics_task = tokio::spawn(async move {
-            info!("Starting metrics server on {metrics_addr}, path: {metrics_path}");
-
             if let Err(e) = metrics::start_metrics_server(
-                metrics_addr,
+                metrics_listener,
                 metrics_path,
                 stats,
                 max_metrics_connections,
@@ -2462,93 +2478,79 @@ async fn main() -> EtchDnsResult<()> {
     }
 
     // Start the DoH servers if configured
-    if !config.doh_listen_addresses.is_empty() {
-        // Parse the DoH addresses
-        let doh_socket_addrs = config.doh_socket_addrs()?;
-
-        for doh_addr in doh_socket_addrs {
-            // Clone the values we need for the DoH server
-            let query_manager = query_manager.clone();
-            let upstream_servers = config.upstream_servers.clone();
-            let server_timeout = config.server_timeout;
-            let dns_packet_len_max = config.dns_packet_len_max;
-            let stats = global_stats.clone();
-            let max_connections = config.max_doh_connections;
-            let doh_rate_limiter = doh_rate_limiter.clone();
-            let load_balancing_strategy = config
-                .load_balancing_strategy
-                .parse::<load_balancer::LoadBalancingStrategy>()
-                .unwrap_or_else(|_| {
-                    warn!(
-                        "Invalid load balancing strategy: {}, using fastest",
-                        config.load_balancing_strategy
-                    );
-                    load_balancer::LoadBalancingStrategy::Fastest
-                });
-
-            // Clone the IP validator for this task
-            let doh_ip_validator = ip_validator.clone();
-
-            // Create a task for the DoH server
-            let doh_task = tokio::spawn(async move {
-                info!("Starting DoH server on {doh_addr}");
-
-                if let Err(e) = doh::start_doh_server(
-                    doh_addr,
-                    query_manager,
-                    upstream_servers,
-                    server_timeout,
-                    dns_packet_len_max,
-                    stats,
-                    max_connections,
-                    doh_rate_limiter,
-                    load_balancing_strategy,
-                    Some(doh_ip_validator),
-                    config.enable_strict_ip_validation,
-                )
-                .await
-                {
-                    error!("DoH server error: {e}");
-                }
+    for doh_listener in doh_listeners {
+        // Clone the values we need for the DoH server
+        let query_manager = query_manager.clone();
+        let upstream_servers = config.upstream_servers.clone();
+        let server_timeout = config.server_timeout;
+        let dns_packet_len_max = config.dns_packet_len_max;
+        let stats = global_stats.clone();
+        let max_connections = config.max_doh_connections;
+        let doh_rate_limiter = doh_rate_limiter.clone();
+        let load_balancing_strategy = config
+            .load_balancing_strategy
+            .parse::<load_balancer::LoadBalancingStrategy>()
+            .unwrap_or_else(|_| {
+                warn!(
+                    "Invalid load balancing strategy: {}, using fastest",
+                    config.load_balancing_strategy
+                );
+                load_balancer::LoadBalancingStrategy::Fastest
             });
 
-            // Add the DoH task to the list of tasks
-            tasks.push(doh_task);
-        }
+        // Clone the IP validator for this task
+        let doh_ip_validator = ip_validator.clone();
+
+        // Create a task for the DoH server
+        let doh_task = tokio::spawn(async move {
+            if let Err(e) = doh::start_doh_server(
+                doh_listener,
+                query_manager,
+                upstream_servers,
+                server_timeout,
+                dns_packet_len_max,
+                stats,
+                max_connections,
+                doh_rate_limiter,
+                load_balancing_strategy,
+                Some(doh_ip_validator),
+                config.enable_strict_ip_validation,
+            )
+            .await
+            {
+                error!("DoH server error: {e}");
+            }
+        });
+
+        // Add the DoH task to the list of tasks
+        tasks.push(doh_task);
     }
 
     // Start the control servers if configured
-    if !config.control_listen_addresses.is_empty() {
-        // Parse the control server addresses
-        let control_socket_addrs = config.control_socket_addrs()?;
+    for control_listener in control_listeners {
+        // Clone the values we need for the control server
+        let control_path = config.control_path.clone();
+        let max_connections = config.max_control_connections;
+        let dns_cache = Some(dns_cache.clone());
+        let stats = Some(global_stats.clone());
 
-        for control_addr in control_socket_addrs {
-            // Clone the values we need for the control server
-            let control_path = config.control_path.clone();
-            let max_connections = config.max_control_connections;
-            let dns_cache = Some(dns_cache.clone());
-            let stats = Some(global_stats.clone());
+        // Create a task for the control server
+        let control_task = tokio::spawn(async move {
+            if let Err(e) = control::start_control_server(
+                control_listener,
+                control_path,
+                max_connections,
+                dns_cache,
+                stats,
+            )
+            .await
+            {
+                error!("Control server error: {e}");
+            }
+        });
 
-            // Create a task for the control server
-            let control_task = tokio::spawn(async move {
-                info!("Starting control server on {control_addr}, base path: {control_path}");
-
-                if let Err(e) = control::start_control_server(
-                    control_addr,
-                    control_path,
-                    max_connections,
-                    dns_cache,
-                    stats,
-                )
-                .await
-                {
-                    error!("Control server error: {e}");
-                }
-            });
-
-            // Add the control task to the list of tasks
-            tasks.push(control_task);
-        }
+        // Add the control task to the list of tasks
+        tasks.push(control_task);
     }
 
     // Clone the configuration values we need for the tasks
@@ -2991,6 +2993,73 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_datagram_from_another_source_is_ignored() {
+        let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut packet = vec![0u8; 4096];
+            let (length, client) = upstream.recv_from(&mut packet).await.unwrap();
+            let stray = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            stray.send_to(b"junk", client).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            packet.truncate(length);
+            dns_parser::set_qr(&mut packet, true).unwrap();
+            upstream.send_to(&packet, client).await.unwrap();
+        });
+        let client = ClientQuery::new(
+            query(),
+            vec![upstream_addr.to_string()],
+            2,
+            4096,
+            Arc::new(SharedStats::new()),
+            load_balancer::LoadBalancingStrategy::Random,
+        );
+
+        let response = client.process().await;
+        server.await.unwrap();
+
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_answered_retry_clears_the_failure_streak() {
+        let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut packet = vec![0u8; 4096];
+            // Drop the first attempt of every query and answer its retry
+            for datagram in 1u64.. {
+                let Ok((length, client)) = upstream.recv_from(&mut packet).await else {
+                    break;
+                };
+                if datagram % 2 == 0 {
+                    let mut response = packet[..length].to_vec();
+                    dns_parser::set_qr(&mut response, true).unwrap();
+                    upstream.send_to(&response, client).await.unwrap();
+                }
+            }
+        });
+        let stats = Arc::new(SharedStats::new());
+
+        for _ in 0..2 {
+            let client = ClientQuery::new(
+                query(),
+                vec![upstream_addr.to_string()],
+                2,
+                4096,
+                stats.clone(),
+                load_balancer::LoadBalancingStrategy::Random,
+            );
+            assert!(client.process().await.is_ok());
+        }
+
+        let snapshot = stats.get_stats().await;
+        let resolver = snapshot.get_resolver_stats(&upstream_addr).unwrap();
+        assert_eq!(resolver.timeout_count, 2);
+        assert_eq!(resolver.consecutive_failures, 0);
+    }
+
     #[test]
     fn test_reused_udp_slot_is_not_removed_by_old_task() {
         let mut slab = Slab::with_capacity(1).unwrap();
@@ -3017,5 +3086,65 @@ mod tests {
         assert!(!remove_tracked_udp_client(&mut slab, old_slot, &old_token).unwrap());
         assert_eq!(slab.len(), 1);
         assert!(remove_tracked_udp_client(&mut slab, new_slot, &new_token).unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_tcp_client_that_never_reads_is_disconnected() {
+        let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        tokio::spawn(async move {
+            // Answer every query with 200 A records, about 3 KB
+            let mut packet = vec![0u8; 4096];
+            while let Ok((_, client)) = upstream.recv_from(&mut packet).await {
+                let mut response = packet[..query().len()].to_vec();
+                dns_parser::set_flags(&mut response, 0x8180).unwrap();
+                dns_parser::set_ancount(&mut response, 200).unwrap();
+                dns_parser::set_arcount(&mut response, 0).unwrap();
+                for i in 0..200u8 {
+                    response.extend_from_slice(&[
+                        0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, i,
+                    ]);
+                }
+                upstream.send_to(&response, client).await.unwrap();
+            }
+        });
+
+        let listener_socket = tokio::net::TcpSocket::new_v4().unwrap();
+        listener_socket.set_send_buffer_size(4096).unwrap();
+        listener_socket
+            .bind("127.0.0.1:0".parse().unwrap())
+            .unwrap();
+        let listener = listener_socket.listen(1).unwrap();
+        let client_socket = tokio::net::TcpSocket::new_v4().unwrap();
+        client_socket.set_recv_buffer_size(4096).unwrap();
+        let mut client = client_socket
+            .connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server_stream, peer) = listener.accept().await.unwrap();
+
+        let handler = tokio::spawn(process_tcp_connection(
+            server_stream,
+            peer,
+            vec![upstream_addr.to_string()],
+            Arc::new(QueryManager::for_tests(1, 4096, true)),
+            4096,
+            1,
+            None,
+        ));
+
+        // Ask for far more data than the socket buffers can hold, and never read it
+        let mut pipelined = Vec::new();
+        for _ in 0..500 {
+            pipelined.extend_from_slice(&(query().len() as u16).to_be_bytes());
+            pipelined.extend_from_slice(&query());
+        }
+        client.write_all(&pipelined).await.unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(20), handler)
+                .await
+                .is_ok()
+        );
     }
 }

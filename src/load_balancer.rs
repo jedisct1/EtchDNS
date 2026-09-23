@@ -83,8 +83,10 @@ pub async fn select_upstream_server<'a>(
 
             // Find the fastest resolver that's in our upstream_servers list
             for (addr, _) in resolvers_by_speed {
-                let addr_str = addr.to_string();
-                if let Some(server) = upstream_servers.iter().find(|s| **s == addr_str) {
+                if let Some(server) = upstream_servers
+                    .iter()
+                    .find(|s| s.parse::<SocketAddr>() == Ok(addr))
+                {
                     debug!("Selected fastest server: {server}");
                     return Some(server);
                 }
@@ -340,6 +342,28 @@ mod tests {
 
         assert_eq!(fastest, Some(&upstream_servers[1]));
         assert_eq!(p2, Some(&upstream_servers[1]));
+    }
+
+    #[tokio::test]
+    async fn test_fastest_strategy_matches_non_canonical_addresses() {
+        let upstream_servers = vec![
+            "[2001:DB8::1]:53".to_string(),
+            "[2001:db8::2]:53".to_string(),
+        ];
+        let stats = Arc::new(SharedStats::new());
+        let fast = upstream_servers[0].parse::<SocketAddr>().unwrap();
+        let slow = upstream_servers[1].parse::<SocketAddr>().unwrap();
+        stats.record_success(fast, Duration::from_millis(10)).await;
+        stats.record_success(slow, Duration::from_millis(50)).await;
+
+        let server = select_upstream_server(
+            &upstream_servers,
+            LoadBalancingStrategy::Fastest,
+            Some(&stats),
+        )
+        .await;
+
+        assert_eq!(server, Some(&upstream_servers[0]));
     }
 
     #[tokio::test]

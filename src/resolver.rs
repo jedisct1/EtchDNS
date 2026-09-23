@@ -1,5 +1,6 @@
 use futures::future::BoxFuture;
-use log::warn;
+use log::{debug, warn};
+use tokio::net::UdpSocket;
 
 use crate::ClientQuery;
 use crate::dns_parser;
@@ -7,7 +8,25 @@ use crate::errors::{DnsError, DnsResult};
 use crate::load_balancer::LoadBalancingStrategy;
 use crate::stats::SharedStats;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+
+/// Waits for a datagram from `peer` and returns its length.
+///
+/// Packets from anyone else are ignored, so that they can't make the query fail.
+pub async fn recv_from_peer(
+    socket: &UdpSocket,
+    buf: &mut [u8],
+    peer: SocketAddr,
+) -> std::io::Result<usize> {
+    loop {
+        let (len, source) = socket.recv_from(buf).await?;
+        if source == peer {
+            return Ok(len);
+        }
+        debug!("Ignoring datagram from unexpected source {source}, expected {peer}");
+    }
+}
 
 /// Creates a resolver function for DNS queries
 #[allow(dead_code)]
@@ -29,6 +48,7 @@ pub fn create_resolver(
         false,
         24,
         56,
+        true,
     )
 }
 
@@ -48,6 +68,7 @@ pub fn create_resolver(
 /// * `enable_ecs` - Whether to enable EDNS-client-subnet
 /// * `ecs_prefix_v4` - IPv4 prefix length for EDNS-client-subnet
 /// * `ecs_prefix_v6` - IPv6 prefix length for EDNS-client-subnet
+/// * `spoof_protection` - Whether to retry over TCP when a UDP response has the wrong transaction ID
 ///
 /// # Returns
 ///
@@ -62,6 +83,7 @@ pub fn create_resolver_with_client_ip(
     enable_ecs: bool,
     ecs_prefix_v4: u8,
     ecs_prefix_v6: u8,
+    spoof_protection: bool,
 ) -> impl Fn(Vec<u8>) -> BoxFuture<'static, DnsResult<Vec<u8>>> + Send + Sync + 'static {
     // Create Arc wrappers outside the closure to avoid cloning on each call
     let upstream_servers_arc = Arc::new(upstream_servers);
@@ -93,18 +115,21 @@ pub fn create_resolver_with_client_ip(
                         enable_ecs_clone,
                         ecs_prefix_v4_clone,
                         ecs_prefix_v6_clone,
-                        true, // Default spoof_protection to enabled for security
+                        spoof_protection,
                     )
                 } else {
                     // Create a regular client query without ECS
-                    ClientQuery::new(
-                        data,
-                        (*upstream_servers_ref).clone(),
-                        server_timeout,
-                        dns_packet_len_max,
-                        Arc::clone(stats),
-                        load_balancing_strategy,
-                    )
+                    ClientQuery {
+                        spoof_protection,
+                        ..ClientQuery::new(
+                            data,
+                            (*upstream_servers_ref).clone(),
+                            server_timeout,
+                            dns_packet_len_max,
+                            Arc::clone(stats),
+                            load_balancing_strategy,
+                        )
+                    }
                 }
             }
             None => {
@@ -127,7 +152,7 @@ pub fn create_resolver_with_client_ip(
                     enable_ecs: enable_ecs_clone,
                     ecs_prefix_v4: ecs_prefix_v4_clone,
                     ecs_prefix_v6: ecs_prefix_v6_clone,
-                    spoof_protection: true, // Default to enabled for security
+                    spoof_protection,
                 }
             }
         };

@@ -5,7 +5,6 @@ use hyper::{Request, Response, StatusCode, server::conn::http1};
 use hyper_util::rt::TokioIo;
 use log::info;
 use std::convert::Infallible;
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
@@ -322,7 +321,7 @@ async fn handle_request(
 
 /// Start the HTTP metrics server
 pub async fn start_metrics_server(
-    addr: SocketAddr,
+    listener: TcpListener,
     metrics_path: String,
     stats: Arc<SharedStats>,
     max_connections: usize,
@@ -331,8 +330,9 @@ pub async fn start_metrics_server(
     tcp_connection_limit: Option<(Arc<Semaphore>, usize)>,
     dns_cache: Option<Arc<crate::cache::SyncDnsCache>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Create a TCP listener
-    let listener = TcpListener::bind(addr).await?;
+    init_start_time();
+
+    let addr = listener.local_addr()?;
     info!("Metrics server listening on {addr}, path: {metrics_path}");
 
     // Create a semaphore to limit concurrent connections
@@ -341,7 +341,7 @@ pub async fn start_metrics_server(
     // Accept connections
     loop {
         // Accept a connection
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = crate::net::accept_with_retry(&listener, "metrics").await;
         let io = TokioIo::new(stream);
 
         // Clone the stats and metrics path for this connection
@@ -396,5 +396,29 @@ pub async fn start_metrics_server(
                 log::error!("Error serving connection: {err}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_uptime_counts_from_server_start() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = start_metrics_server(
+            listener,
+            "/metrics".to_string(),
+            Arc::new(SharedStats::new()),
+            1,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Runs until the server waits for its first connection
+        assert!(futures::FutureExt::now_or_never(server).is_none());
+        assert!(START_TIME.get().is_some());
     }
 }

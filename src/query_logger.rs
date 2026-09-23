@@ -115,9 +115,6 @@ impl QueryLogger {
             return Ok(());
         }
 
-        // Close the current log file
-        inner.file = None;
-
         let log_path = inner.log_file_path.as_ref().unwrap();
         let log_path_str = log_path.to_string_lossy();
 
@@ -183,20 +180,15 @@ impl QueryLogger {
         let new_path = PathBuf::from(&new_filename);
 
         // Rename the current log file
-        if fs::rename(log_path, &new_path).is_err() {
-            error!("Failed to rename log file from {log_path_str} to {new_filename}");
-            // Try to reopen the original file
-            match OpenOptions::new().create(true).append(true).open(log_path) {
-                Ok(file) => {
-                    inner.file = Some(file);
-                    inner.current_size = 0;
-                }
-                Err(e) => {
-                    error!("Failed to reopen log file {log_path_str}: {e}");
-                }
-            }
+        if let Err(e) = fs::rename(log_path, &new_path) {
+            error!("Failed to rename log file from {log_path_str} to {new_filename}: {e}");
+            // Keep writing to the open file, which we may not be allowed to reopen, and try
+            // again at the next rotation
+            inner.current_size = 0;
+            inner.last_rotation_time = now;
             return Ok(());
         }
+        inner.file = None;
 
         // Compress the rotated file if compression is enabled
         if inner.compression {
@@ -387,5 +379,50 @@ impl QueryLogger {
     pub async fn is_enabled(&self) -> bool {
         let inner = self.inner.lock().await;
         inner.file.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn test_failed_rotation_keeps_logging() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("queries.log");
+        let logger = QueryLogger::new(
+            Some(path.to_string_lossy().into_owned()),
+            false,
+            false,
+            false,
+            false,
+            1,
+            "never".to_string(),
+            7,
+            false,
+        );
+        let key = DNSKey::new("before.example".to_string(), 1, 1, false).unwrap();
+        logger.log_query(&key, "192.0.2.1:5353").await;
+
+        // Neither renaming nor reopening the log is possible anymore
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        if File::create(dir.path().join("probe")).is_ok() {
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("skipped: permissions are not enforced for this user");
+            return;
+        }
+        let key = DNSKey::new("during.example".to_string(), 1, 1, false).unwrap();
+        logger.log_query(&key, "192.0.2.1:5353").await;
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(logger.is_enabled().await);
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("during.example")
+        );
     }
 }

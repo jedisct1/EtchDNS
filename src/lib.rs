@@ -11,6 +11,7 @@ pub mod hooks;
 pub mod ip_validator;
 pub mod load_balancer;
 pub mod metrics;
+pub mod net;
 pub mod nx_zones;
 pub mod probe;
 pub mod query_logger;
@@ -173,9 +174,9 @@ impl ClientQuery {
             DnsError::UpstreamError(format!("Failed to send query to {upstream_addr}: {e}"))
         })?;
         let mut response = vec![0u8; self.dns_packet_len_max];
-        let (response_len, response_addr) = tokio::time::timeout(
+        let response_len = tokio::time::timeout(
             Duration::from_secs(self.server_timeout),
-            socket.recv_from(&mut response),
+            resolver::recv_from_peer(&socket, &mut response, upstream_addr),
         )
         .await
         .map_err(|_| DnsError::UpstreamTimeout)?
@@ -184,13 +185,6 @@ impl ClientQuery {
                 "Failed to receive response from {upstream_addr}: {e}"
             ))
         })?;
-
-        if response_addr != upstream_addr {
-            return Err(DnsError::UpstreamError(format!(
-                "Unexpected response source {response_addr}, expected {upstream_addr}"
-            ))
-            .into());
-        }
         response.truncate(response_len);
 
         let wrong_transaction_id = dns_parser::tid(&response) != transaction_id;

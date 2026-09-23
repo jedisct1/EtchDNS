@@ -17,17 +17,19 @@ pub const DNS_RCODE_BADVERS: u8 = 16; // Bad EDNS version
 
 /// Validates a DNS packet and creates a DNSKey from it
 pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DNSKey> {
+    // Checked first, so that we never answer a response, not even with BADVERS
+    if dns_parser::is_response(packet) {
+        return Err(crate::errors::DnsError::InvalidPacket(
+            "Client packet is a response, not a query".to_string(),
+        ));
+    }
+
     // Validate that this is a valid DNS packet
     if let Err(e) = dns_parser::validate_dns_packet(packet) {
         // If validation fails, log the error and return without responding
         debug!("Invalid DNS packet from {client_addr}: {e}");
         debug!("Dropping invalid DNS packet without response");
         return Err(e);
-    }
-    if dns_parser::is_response(packet) {
-        return Err(crate::errors::DnsError::InvalidPacket(
-            "Client packet is a response, not a query".to_string(),
-        ));
     }
 
     // Create a DNSKey from the packet
@@ -277,6 +279,7 @@ fn prepare_resolver(
     let enable_ecs = query_manager.get_enable_ecs();
     let ecs_prefix_v4 = query_manager.get_ecs_prefix_v4();
     let ecs_prefix_v6 = query_manager.get_ecs_prefix_v6();
+    let spoof_protection = query_manager.get_spoof_protection();
 
     // Create a resolver function for this query
     crate::resolver::create_resolver_with_client_ip(
@@ -289,6 +292,7 @@ fn prepare_resolver(
         enable_ecs,
         ecs_prefix_v4,
         ecs_prefix_v6,
+        spoof_protection,
     )
 }
 
@@ -509,6 +513,14 @@ mod tests {
         dns_parser::set_qr(&mut packet, true).unwrap();
 
         assert!(validate_and_create_key(&packet, "127.0.0.1:12345").is_err());
+
+        let mut packet = create_test_query_with_edns_version(1);
+        dns_parser::set_qr(&mut packet, true).unwrap();
+
+        assert!(matches!(
+            validate_and_create_key(&packet, "127.0.0.1:12345"),
+            Err(crate::errors::DnsError::InvalidPacket(_))
+        ));
     }
 
     #[test]
@@ -519,5 +531,52 @@ mod tests {
         let response = create_dns_response(&query, DNS_RCODE_REFUSED, None);
 
         assert!(!dns_parser::is_authenticated_data_requested(&response));
+    }
+
+    #[tokio::test]
+    async fn test_disabled_spoof_protection_skips_tcp_fallback() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = udp.local_addr().unwrap();
+        let tcp = tokio::net::TcpListener::bind(upstream_addr).await.unwrap();
+        tokio::spawn(async move {
+            let mut packet = vec![0u8; 4096];
+            let (length, client) = udp.recv_from(&mut packet).await.unwrap();
+            packet.truncate(length);
+            dns_parser::set_qr(&mut packet, true).unwrap();
+            let wrong_tid = dns_parser::tid(&packet).wrapping_add(1);
+            dns_parser::set_tid(&mut packet, wrong_tid).unwrap();
+            udp.send_to(&packet, client).await.unwrap();
+        });
+        tokio::spawn(async move {
+            let (mut stream, _) = tcp.accept().await.unwrap();
+            let mut length = [0u8; 2];
+            stream.read_exact(&mut length).await.unwrap();
+            let mut packet = vec![0u8; usize::from(u16::from_be_bytes(length))];
+            stream.read_exact(&mut packet).await.unwrap();
+            dns_parser::set_qr(&mut packet, true).unwrap();
+            stream.write_all(&length).await.unwrap();
+            stream.write_all(&packet).await.unwrap();
+        });
+
+        let query_manager = std::sync::Arc::new(crate::query_manager::QueryManager::for_tests(
+            2, 1232, false,
+        ));
+        let response = ()
+            .process_dns_query(
+                &create_test_query_with_edns_version(0),
+                "127.0.0.1:5353",
+                "UDP",
+                &query_manager,
+                &[upstream_addr.to_string()],
+                2,
+                1232,
+                Some(std::sync::Arc::new(crate::stats::SharedStats::new())),
+                crate::load_balancer::LoadBalancingStrategy::Random,
+            )
+            .await;
+
+        assert!(response.is_none());
     }
 }

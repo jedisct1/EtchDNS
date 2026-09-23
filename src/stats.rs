@@ -4,6 +4,12 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
 
+/// Failures in a row that take a resolver out of the speed ranking.
+///
+/// Each unanswered attempt counts, so a query that gets no answer at all is enough, but a
+/// single lost packet isn't.
+const MAX_CONSECUTIVE_FAILURES: u64 = 2;
+
 /// Statistics for a single resolver
 #[derive(Debug, Clone)]
 pub struct ResolverStats {
@@ -15,6 +21,8 @@ pub struct ResolverStats {
     pub failure_count: u64,
     /// Number of timed out queries
     pub timeout_count: u64,
+    /// Failures and timeouts since the resolver last answered
+    pub consecutive_failures: u64,
     /// Last time this resolver was used
     pub last_used: SystemTime,
     /// Weight factor for the moving average (between 0 and 1)
@@ -30,6 +38,7 @@ impl ResolverStats {
             success_count: 0,
             failure_count: 0,
             timeout_count: 0,
+            consecutive_failures: 0,
             last_used: SystemTime::now(),
             weight_factor: 0.2, // 20% weight to new values
         }
@@ -37,7 +46,8 @@ impl ResolverStats {
 
     /// Update the moving average response time
     pub fn update_response_time(&mut self, response_time: Duration) {
-        let response_time_ms = response_time.as_millis() as f64;
+        // Keep sub-millisecond precision, since 0.0 means that nothing was measured yet
+        let response_time_ms = response_time.as_nanos() as f64 / 1_000_000.0;
 
         if self.avg_response_time_ms == 0.0 {
             // First measurement
@@ -52,6 +62,7 @@ impl ResolverStats {
     /// Record a successful query
     pub fn record_success(&mut self, response_time: Duration) {
         self.success_count = self.success_count.saturating_add(1);
+        self.consecutive_failures = 0;
         self.last_used = SystemTime::now();
         self.update_response_time(response_time);
     }
@@ -59,12 +70,20 @@ impl ResolverStats {
     /// Record a failed query
     pub fn record_failure(&mut self) {
         self.failure_count = self.failure_count.saturating_add(1);
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         self.last_used = SystemTime::now();
     }
 
     /// Record a timed out query
     pub fn record_timeout(&mut self) {
         self.timeout_count = self.timeout_count.saturating_add(1);
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.last_used = SystemTime::now();
+    }
+
+    /// Record an answer that can't be timed, such as the reply to a retry
+    pub fn clear_failures(&mut self) {
+        self.consecutive_failures = 0;
         self.last_used = SystemTime::now();
     }
 }
@@ -144,6 +163,13 @@ impl GlobalStats {
         stats.record_timeout();
     }
 
+    /// Record an answer that can't be timed, such as the reply to a retry
+    pub fn clear_failures(&mut self, resolver: SocketAddr) {
+        if let Some(stats) = self.resolver_stats.get_mut(&resolver) {
+            stats.clear_failures();
+        }
+    }
+
     /// Get statistics for a specific resolver
     pub fn get_resolver_stats(&self, resolver: &SocketAddr) -> Option<&ResolverStats> {
         self.resolver_stats.get(resolver)
@@ -175,11 +201,15 @@ impl GlobalStats {
     }
 
     /// Get a list of resolvers sorted by response time (fastest first)
+    ///
+    /// Resolvers that keep failing are left out until they answer again.
     pub fn get_resolvers_by_speed(&self) -> Vec<(SocketAddr, f64)> {
         let mut resolvers: Vec<(SocketAddr, f64)> = self
             .resolver_stats
             .iter()
-            .filter(|(_, stats)| stats.success_count > 0)
+            .filter(|(_, stats)| {
+                stats.success_count > 0 && stats.consecutive_failures < MAX_CONSECUTIVE_FAILURES
+            })
             .map(|(addr, stats)| (*addr, stats.avg_response_time_ms))
             .collect();
 
@@ -226,6 +256,12 @@ impl SharedStats {
     pub async fn record_timeout(&self, resolver: SocketAddr) {
         let mut stats = self.inner.lock().await;
         stats.record_timeout(resolver);
+    }
+
+    /// Record an answer that can't be timed, such as the reply to a retry
+    pub async fn clear_failures(&self, resolver: SocketAddr) {
+        let mut stats = self.inner.lock().await;
+        stats.clear_failures(resolver);
     }
 
     /// Get a snapshot of the global stats
@@ -318,5 +354,37 @@ mod tests {
         assert_eq!(stats.success_count, u64::MAX);
         assert_eq!(stats.failure_count, u64::MAX);
         assert_eq!(stats.timeout_count, u64::MAX);
+    }
+
+    #[test]
+    fn test_sub_millisecond_samples_are_averaged() {
+        let mut stats = ResolverStats::new();
+        for _ in 0..100 {
+            stats.record_success(Duration::from_micros(400));
+        }
+        stats.record_success(Duration::from_millis(100));
+
+        assert!((stats.avg_response_time_ms - 20.32).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_failing_resolver_is_not_ranked_by_speed() {
+        let mut stats = GlobalStats::new();
+        let fast: SocketAddr = "192.0.2.1:53".parse().unwrap();
+        let slow: SocketAddr = "192.0.2.2:53".parse().unwrap();
+        stats.record_success(fast, Duration::from_millis(10));
+        stats.record_success(slow, Duration::from_millis(50));
+
+        stats.record_timeout(fast);
+        assert_eq!(stats.get_resolvers_by_speed().len(), 2);
+        stats.record_timeout(fast);
+        assert_eq!(stats.get_resolvers_by_speed(), vec![(slow, 50.0)]);
+
+        stats.record_failure(slow);
+        stats.record_failure(slow);
+        assert!(stats.get_resolvers_by_speed().is_empty());
+
+        stats.record_success(fast, Duration::from_millis(10));
+        assert_eq!(stats.get_resolvers_by_speed(), vec![(fast, 10.0)]);
     }
 }
