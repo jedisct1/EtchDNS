@@ -10,6 +10,9 @@ on:
         required: true
         default: "dev"
 
+permissions:
+  contents: write
+
 jobs:
   build-linux:
     name: Build Linux (x86_64)
@@ -22,7 +25,7 @@ jobs:
           - features: "hooks"
             suffix: "-hooks"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -60,14 +63,15 @@ jobs:
           tar -czf "${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: etchdns-linux-x86_64${{ matrix.suffix }}
           path: etchdns-*-linux-x86_64${{ matrix.suffix }}.tar.gz
+          if-no-files-found: error
 
       - name: Upload to release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2.2.1
+        uses: softprops/action-gh-release@v3.0.3
         with:
           files: etchdns-*-linux-x86_64${{ matrix.suffix }}.tar.gz
 
@@ -86,7 +90,7 @@ jobs:
           - ""
           - "hooks"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -128,14 +132,15 @@ jobs:
           zip -r "${PACKAGE_NAME}.zip" "${PACKAGE_NAME}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: etchdns-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}
           path: etchdns-*-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}.zip
+          if-no-files-found: error
 
       - name: Upload to release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2.2.1
+        uses: softprops/action-gh-release@v3.0.3
         with:
           files: etchdns-*-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}.zip
 
@@ -144,16 +149,19 @@ jobs:
     name: Combine Artifacts
     needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release'
+    outputs:
+      digests: ${{ steps.hash.outputs.digests }}
+    env:
+      VERSION: ${{ github.event.release.tag_name || github.event.inputs.version }}
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
+          pattern: etchdns-*
           path: artifacts
 
       - name: Create combined archive
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
           mkdir -p "etchdns-${VERSION}-all"
           cp -r artifacts/*/* "etchdns-${VERSION}-all/"
 
@@ -162,15 +170,46 @@ jobs:
           echo "# Generated on $(date -u)" >> "etchdns-${VERSION}-SHA256SUMS.txt"
           echo "" >> "etchdns-${VERSION}-SHA256SUMS.txt"
 
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) | sort | while read file; do
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) | sort | while IFS= read -r file; do
             sha256sum "$file" | sed 's|artifacts/[^/]*/||' >> "etchdns-${VERSION}-SHA256SUMS.txt"
           done
 
           tar -czf "etchdns-${VERSION}-all.tar.gz" "etchdns-${VERSION}-all"
 
+      - name: Generate subjects for provenance
+        id: hash
+        run: |
+          set -euo pipefail
+          cd "etchdns-${VERSION}-all"
+          subjects=$(sha256sum -- *.tar.gz *.zip)
+          cd ..
+          subjects+=$'\n'$(sha256sum -- "etchdns-${VERSION}-all.tar.gz" "etchdns-${VERSION}-SHA256SUMS.txt")
+          echo "digests=$(printf '%s\n' "$subjects" | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload combined artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-bundle
+          path: |
+            etchdns-*-all.tar.gz
+            etchdns-*-SHA256SUMS.txt
+          if-no-files-found: error
+
       - name: Upload combined artifact to release
-        uses: softprops/action-gh-release@v2.2.1
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3.0.3
         with:
           files: |
             etchdns-*-all.tar.gz
             etchdns-*-SHA256SUMS.txt
+
+  provenance:
+    needs: [combine-artifacts]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.combine-artifacts.outputs.digests }}
+      upload-assets: ${{ github.event_name == 'release' }}
