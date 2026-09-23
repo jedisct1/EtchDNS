@@ -15,8 +15,13 @@ pub const DNS_RCODE_NOTIMP: u8 = 4; // Not implemented
 pub const DNS_RCODE_REFUSED: u8 = 5; // Query refused
 pub const DNS_RCODE_BADVERS: u8 = 16; // Bad EDNS version
 
-/// Validates a DNS packet and creates a DNSKey from it
-pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DNSKey> {
+/// Validates a DNS packet and creates a DNSKey from it.
+///
+/// Also returns the query without the extra bytes some clients add at the end.
+pub fn validate_and_create_key<'a>(
+    packet: &'a [u8],
+    client_addr: &str,
+) -> DnsResult<(DNSKey, &'a [u8])> {
     // Checked first, so that we never answer a response, not even with BADVERS
     if dns_parser::is_response(packet) {
         return Err(crate::errors::DnsError::InvalidPacket(
@@ -24,17 +29,15 @@ pub fn validate_and_create_key(packet: &[u8], client_addr: &str) -> DnsResult<DN
         ));
     }
 
-    // Validate that this is a valid DNS packet
-    if let Err(e) = dns_parser::validate_dns_packet(packet) {
-        // If validation fails, log the error and return without responding
+    let message_len = dns_parser::validate_dns_packet(packet).inspect_err(|e| {
         debug!("Invalid DNS packet from {client_addr}: {e}");
         debug!("Dropping invalid DNS packet without response");
-        return Err(e);
-    }
+    })?;
+    let query = &packet[..message_len];
 
     // Create a DNSKey from the packet
-    match DNSKey::from_packet(packet) {
-        Ok(key) => Ok(key),
+    match DNSKey::from_packet(query) {
+        Ok(key) => Ok((key, query)),
         Err(e) => {
             debug!("Failed to create DNSKey from packet from {client_addr}: {e}");
             debug!("Error details: {e:?}");
@@ -176,8 +179,8 @@ pub trait DnsQueryProcessor {
         log_received_packet(query_data.len(), client_addr, protocol);
 
         // Validate the packet and create a DNSKey
-        let dns_key = match validate_and_create_key(query_data, client_addr) {
-            Ok(key) => key,
+        let (dns_key, query_data) = match validate_and_create_key(query_data, client_addr) {
+            Ok(validated) => validated,
             Err(e) => {
                 // Check if this is an unsupported EDNS version error
                 if let crate::errors::DnsError::UnsupportedEdnsVersion { version } = e {
@@ -578,5 +581,53 @@ mod tests {
             .await;
 
         assert!(response.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_trailing_data_is_answered_but_not_forwarded() {
+        let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = udp.local_addr().unwrap();
+        let (forwarded_tx, forwarded_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut packet = vec![0u8; 4096];
+            let (length, client) = udp.recv_from(&mut packet).await.unwrap();
+            packet.truncate(length);
+            let mut response = packet.clone();
+            dns_parser::set_qr(&mut response, true).unwrap();
+            udp.send_to(&response, client).await.unwrap();
+            forwarded_tx.send(packet).unwrap();
+        });
+
+        // Extra bytes at the end that look like an OPT record asking for DNSSEC
+        let mut query = create_test_query_with_edns_version(1);
+        dns_parser::set_arcount(&mut query, 0).unwrap();
+        let opt_flags = query.len() - 4;
+        query[opt_flags..opt_flags + 2].copy_from_slice(&dns_parser::DNS_FLAG_DO.to_be_bytes());
+
+        let query_manager =
+            std::sync::Arc::new(crate::query_manager::QueryManager::for_tests(2, 1232, true));
+        let response = ()
+            .process_dns_query(
+                &query,
+                "127.0.0.1:5353",
+                "UDP",
+                &query_manager,
+                &[upstream_addr.to_string()],
+                2,
+                1232,
+                Some(std::sync::Arc::new(crate::stats::SharedStats::new())),
+                crate::load_balancer::LoadBalancingStrategy::Random,
+            )
+            .await;
+        assert!(response.is_some());
+
+        // The upstream only sees our own OPT record
+        let forwarded = forwarded_rx.await.unwrap();
+        assert_eq!(
+            dns_parser::validate_dns_packet(&forwarded).unwrap(),
+            forwarded.len()
+        );
+        assert_eq!(dns_parser::arcount(&forwarded), 1);
+        assert!(!dns_parser::is_dnssec_ok(&forwarded).unwrap());
     }
 }

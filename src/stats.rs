@@ -1,14 +1,28 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::Mutex;
 
-/// Failures in a row that take a resolver out of the speed ranking.
+/// Unanswered queries in a row before a resolver is parked.
 ///
-/// Each unanswered attempt counts, so a query that gets no answer at all is enough, but a
-/// single lost packet isn't.
-const MAX_CONSECUTIVE_FAILURES: u64 = 2;
+/// Even a healthy resolver often can't answer for a broken domain, so one or two misses
+/// shouldn't be enough.
+pub(crate) const PARK_AFTER_FAILURES: u64 = 3;
+
+/// How long a resolver stays parked.
+/// Each new failure doubles it, up to the maximum.
+const MIN_PARK_DURATION: Duration = Duration::from_secs(5);
+const MAX_PARK_DURATION: Duration = Duration::from_secs(60);
+
+fn park_duration(consecutive_failures: u64) -> Duration {
+    let doublings = consecutive_failures
+        .saturating_sub(PARK_AFTER_FAILURES)
+        .min(16) as u32;
+    MIN_PARK_DURATION
+        .saturating_mul(1 << doublings)
+        .min(MAX_PARK_DURATION)
+}
 
 /// Statistics for a single resolver
 #[derive(Debug, Clone)]
@@ -28,6 +42,8 @@ pub struct ResolverStats {
     /// Weight factor for the moving average (between 0 and 1)
     /// Lower values give more weight to historical data
     weight_factor: f64,
+    /// The resolver gets no queries until then
+    parked_until: Option<Instant>,
 }
 
 impl ResolverStats {
@@ -41,6 +57,7 @@ impl ResolverStats {
             consecutive_failures: 0,
             last_used: SystemTime::now(),
             weight_factor: 0.2, // 20% weight to new values
+            parked_until: None,
         }
     }
 
@@ -62,29 +79,46 @@ impl ResolverStats {
     /// Record a successful query
     pub fn record_success(&mut self, response_time: Duration) {
         self.success_count = self.success_count.saturating_add(1);
-        self.consecutive_failures = 0;
-        self.last_used = SystemTime::now();
+        self.clear_failures();
         self.update_response_time(response_time);
     }
 
     /// Record a failed query
     pub fn record_failure(&mut self) {
         self.failure_count = self.failure_count.saturating_add(1);
-        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-        self.last_used = SystemTime::now();
+        self.add_failure();
     }
 
     /// Record a timed out query
     pub fn record_timeout(&mut self) {
         self.timeout_count = self.timeout_count.saturating_add(1);
-        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-        self.last_used = SystemTime::now();
+        self.add_failure();
     }
 
     /// Record an answer that can't be timed, such as the reply to a retry
     pub fn clear_failures(&mut self) {
         self.consecutive_failures = 0;
+        self.parked_until = None;
         self.last_used = SystemTime::now();
+    }
+
+    fn add_failure(&mut self) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.last_used = SystemTime::now();
+        if self.consecutive_failures >= PARK_AFTER_FAILURES {
+            self.parked_until = Some(Instant::now() + park_duration(self.consecutive_failures));
+        }
+    }
+
+    fn is_parked(&self) -> bool {
+        self.parked_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    fn record_query_sent(&mut self) {
+        if self.parked_until.is_some() && !self.is_parked() {
+            self.parked_until = Some(Instant::now() + park_duration(self.consecutive_failures));
+        }
     }
 }
 
@@ -170,6 +204,16 @@ impl GlobalStats {
         }
     }
 
+    /// Record that a query is about to be sent to a resolver.
+    ///
+    /// If the resolver's parking time is over, this query is a trial.
+    /// Other queries stay away until we know how it went, in case the resolver is still down.
+    pub fn record_query_sent(&mut self, resolver: SocketAddr) {
+        if let Some(stats) = self.resolver_stats.get_mut(&resolver) {
+            stats.record_query_sent();
+        }
+    }
+
     /// Get statistics for a specific resolver
     pub fn get_resolver_stats(&self, resolver: &SocketAddr) -> Option<&ResolverStats> {
         self.resolver_stats.get(resolver)
@@ -202,14 +246,12 @@ impl GlobalStats {
 
     /// Get a list of resolvers sorted by response time (fastest first)
     ///
-    /// Resolvers that keep failing are left out until they answer again.
+    /// Resolvers that keep failing are left out for a while.
     pub fn get_resolvers_by_speed(&self) -> Vec<(SocketAddr, f64)> {
         let mut resolvers: Vec<(SocketAddr, f64)> = self
             .resolver_stats
             .iter()
-            .filter(|(_, stats)| {
-                stats.success_count > 0 && stats.consecutive_failures < MAX_CONSECUTIVE_FAILURES
-            })
+            .filter(|(_, stats)| stats.success_count > 0 && !stats.is_parked())
             .map(|(addr, stats)| (*addr, stats.avg_response_time_ms))
             .collect();
 
@@ -262,6 +304,12 @@ impl SharedStats {
     pub async fn clear_failures(&self, resolver: SocketAddr) {
         let mut stats = self.inner.lock().await;
         stats.clear_failures(resolver);
+    }
+
+    /// Record that a query is about to be sent to a resolver
+    pub async fn record_query_sent(&self, resolver: SocketAddr) {
+        let mut stats = self.inner.lock().await;
+        stats.record_query_sent(resolver);
     }
 
     /// Get a snapshot of the global stats
@@ -368,23 +416,38 @@ mod tests {
     }
 
     #[test]
-    fn test_failing_resolver_is_not_ranked_by_speed() {
+    fn test_failing_resolver_is_parked_for_a_while() {
         let mut stats = GlobalStats::new();
         let fast: SocketAddr = "192.0.2.1:53".parse().unwrap();
         let slow: SocketAddr = "192.0.2.2:53".parse().unwrap();
         stats.record_success(fast, Duration::from_millis(10));
         stats.record_success(slow, Duration::from_millis(50));
+        let without_fast = vec![(slow, 50.0)];
 
-        stats.record_timeout(fast);
+        for _ in 1..PARK_AFTER_FAILURES {
+            stats.record_timeout(fast);
+        }
         assert_eq!(stats.get_resolvers_by_speed().len(), 2);
         stats.record_timeout(fast);
-        assert_eq!(stats.get_resolvers_by_speed(), vec![(slow, 50.0)]);
+        assert_eq!(stats.get_resolvers_by_speed(), without_fast);
 
-        stats.record_failure(slow);
-        stats.record_failure(slow);
-        assert!(stats.get_resolvers_by_speed().is_empty());
+        // When the time is up, it gets one trial query, not all of them
+        stats.resolver_stats.get_mut(&fast).unwrap().parked_until = Some(Instant::now());
+        assert_eq!(stats.get_resolvers_by_speed().len(), 2);
+        stats.record_query_sent(slow);
+        assert_eq!(stats.get_resolvers_by_speed().len(), 2);
+        stats.record_query_sent(fast);
+        assert_eq!(stats.get_resolvers_by_speed(), without_fast);
 
         stats.record_success(fast, Duration::from_millis(10));
-        assert_eq!(stats.get_resolvers_by_speed(), vec![(fast, 10.0)]);
+        assert_eq!(stats.get_resolvers_by_speed().len(), 2);
+
+        // Each failed trial doubles the wait
+        assert_eq!(park_duration(PARK_AFTER_FAILURES), MIN_PARK_DURATION);
+        assert_eq!(
+            park_duration(PARK_AFTER_FAILURES + 1),
+            MIN_PARK_DURATION * 2
+        );
+        assert_eq!(park_duration(u64::MAX), MAX_PARK_DURATION);
     }
 }

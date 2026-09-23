@@ -132,7 +132,7 @@ impl ClientQuery {
 
     /// Process the client query by forwarding it to an upstream DNS server.
     pub async fn process(&self) -> EtchDnsResult<Vec<u8>> {
-        dns_parser::validate_dns_packet(&self.data)?;
+        let message_len = dns_parser::validate_dns_packet(&self.data)?;
         let upstream = load_balancer::select_upstream_server(
             &self.upstream_servers,
             self.load_balancing_strategy,
@@ -152,7 +152,7 @@ impl ClientQuery {
             DnsError::UpstreamError(format!("Failed to bind upstream UDP socket: {e}"))
         })?;
 
-        let mut query = self.data.clone();
+        let mut query = self.data[..message_len].to_vec();
         let advertised_size = u16::try_from(self.dns_packet_len_max).unwrap_or(u16::MAX);
         dns_parser::set_edns_max_payload_size(&mut query, advertised_size)?;
         if self.enable_ecs

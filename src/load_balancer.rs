@@ -48,6 +48,20 @@ pub async fn select_upstream_server<'a>(
     strategy: LoadBalancingStrategy,
     stats: Option<&Arc<SharedStats>>,
 ) -> Option<&'a String> {
+    let server = pick_upstream_server(upstream_servers, strategy, stats).await?;
+    if let Some(stats) = stats
+        && let Ok(addr) = server.parse::<SocketAddr>()
+    {
+        stats.record_query_sent(addr).await;
+    }
+    Some(server)
+}
+
+async fn pick_upstream_server<'a>(
+    upstream_servers: &'a [String],
+    strategy: LoadBalancingStrategy,
+    stats: Option<&Arc<SharedStats>>,
+) -> Option<&'a String> {
     if upstream_servers.is_empty() {
         return None;
     }

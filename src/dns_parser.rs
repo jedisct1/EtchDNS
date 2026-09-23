@@ -61,8 +61,12 @@ pub const DNS_OPCODE_NOTIFY: u8 = 4; // Zone change notification
 #[allow(dead_code)]
 pub const DNS_OPCODE_UPDATE: u8 = 5; // Dynamic update
 
-/// Validates that a DNS packet looks valid
-pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
+/// Checks that a DNS packet looks valid, and returns the length of the message in it.
+///
+/// Some clients add extra bytes after the last record.
+/// They are allowed, but must be cut off before changing the message, or they could end up
+/// being read as records.
+pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<usize> {
     // Check minimum packet size
     if packet.len() < DNS_HEADER_SIZE {
         return Err(DnsError::PacketTooShort { offset: 0 });
@@ -295,14 +299,7 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
         an_count as usize + ns_count as usize,
         |_| Ok(()),
     )?;
-    let end_offset = validate_edns_records(packet, additional_offset, ar_count as usize)?;
-
-    // Extra bytes would be read as records once we add our own OPT record to the query
-    if !is_response(packet) && end_offset != packet.len() {
-        return Err(DnsError::InvalidPacket(
-            "Trailing data after the last record".to_string(),
-        ));
-    }
+    let message_len = validate_edns_records(packet, additional_offset, ar_count as usize)?;
 
     // Check EDNS version if OPT record is present
     if let Some(edns_version) = extract_edns_version(packet)?
@@ -313,7 +310,7 @@ pub fn validate_dns_packet(packet: &[u8]) -> DnsResult<()> {
         });
     }
 
-    Ok(())
+    Ok(message_len)
 }
 
 fn validate_edns_records(packet: &[u8], mut offset: usize, arcount: usize) -> DnsResult<usize> {
@@ -2270,15 +2267,18 @@ mod tests {
     }
 
     #[test]
-    fn test_query_with_trailing_data_is_rejected() {
-        // An OPT record that ARCOUNT doesn't mention
-        let mut query = create_test_query();
-        add_edns_section(&mut query, 1232).unwrap();
-        set_arcount(&mut query, 0).unwrap();
-        assert!(validate_dns_packet(&query).is_err());
+    fn test_trailing_data_is_not_part_of_the_message() {
+        let query = create_test_query();
+        assert_eq!(validate_dns_packet(&query).unwrap(), query.len());
 
-        set_qr(&mut query, true).unwrap();
-        assert!(validate_dns_packet(&query).is_ok());
+        // An OPT record at the end that the header doesn't count
+        let mut with_trailing_opt = query.clone();
+        add_edns_section(&mut with_trailing_opt, 1232).unwrap();
+        set_arcount(&mut with_trailing_opt, 0).unwrap();
+        assert_eq!(
+            validate_dns_packet(&with_trailing_opt).unwrap(),
+            query.len()
+        );
     }
 
     #[test]

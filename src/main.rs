@@ -1032,19 +1032,7 @@ impl ClientQuery {
                     "Received response of size {len} bytes from upstream server (first attempt): {upstream_addr} in {response_time:?}"
                 );
 
-                // Record the successful response in stats if available
-                if let Some(stats) = &self.stats
-                    && let Ok(addr) = upstream_addr.to_string().parse()
-                {
-                    // Use a reference to avoid cloning
-                    let stats_ref = Arc::clone(stats);
-                    tokio::spawn(async move {
-                        stats_ref.record_success(addr, response_time).await;
-                    });
-                }
-
-                // Process the response
-                return process_response(
+                let response = process_response(
                     &buf[..len],
                     random_tid,
                     upstream_addr,
@@ -1052,20 +1040,23 @@ impl ClientQuery {
                     &query_data,
                 )
                 .await;
+
+                // Only a valid answer counts as a success.
+                // A bad one doesn't count as a failure either, since anyone could have faked it.
+                if response.is_ok()
+                    && let Some(stats) = &self.stats
+                {
+                    stats.record_success(upstream_addr, response_time).await;
+                }
+
+                response
             }
             Ok(Err(e)) => {
                 // Socket error
                 error!("Failed to receive response from upstream server {upstream_addr}: {e}");
 
-                // Record the failure in stats if available
-                if let Some(stats) = &self.stats
-                    && let Ok(addr) = upstream_addr.to_string().parse()
-                {
-                    // Use a reference to avoid cloning
-                    let stats_ref = Arc::clone(stats);
-                    tokio::spawn(async move {
-                        stats_ref.record_failure(addr).await;
-                    });
+                if let Some(stats) = &self.stats {
+                    stats.record_failure(upstream_addr).await;
                 }
 
                 Err(DnsError::UpstreamError(format!(
@@ -1079,7 +1070,8 @@ impl ClientQuery {
                     "Timeout waiting for response from upstream server after {initial_timeout} seconds (retrying): {upstream_addr}"
                 );
 
-                // Recorded before retrying, so that an answered retry can clear it
+                // Counted once per query, and before the retry, so that an answer to the retry
+                // can undo it.
                 if let Some(stats) = &self.stats {
                     stats.record_timeout(upstream_addr).await;
                 }
@@ -1143,17 +1135,6 @@ impl ClientQuery {
                         debug!(
                             "Timeout waiting for response from upstream server on retry after {remaining_timeout} seconds: {upstream_addr}"
                         );
-
-                        // Record the timeout in stats if available
-                        if let Some(stats) = &self.stats
-                            && let Ok(addr) = upstream_addr.to_string().parse()
-                        {
-                            // Use a reference to avoid cloning
-                            let stats_ref = Arc::clone(stats);
-                            tokio::spawn(async move {
-                                stats_ref.record_timeout(addr).await;
-                            });
-                        }
 
                         // Return timeout error after both attempts failed
                         Err(DnsError::UpstreamTimeout.into())
@@ -3058,6 +3039,40 @@ mod tests {
         let resolver = snapshot.get_resolver_stats(&upstream_addr).unwrap();
         assert_eq!(resolver.timeout_count, 2);
         assert_eq!(resolver.consecutive_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_answer_does_not_unpark_a_resolver() {
+        let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        tokio::spawn(async move {
+            // Reply with the right ID, but for a different name
+            let mut packet = vec![0u8; 4096];
+            let (length, client) = upstream.recv_from(&mut packet).await.unwrap();
+            let mut response = packet[..length].to_vec();
+            dns_parser::set_qr(&mut response, true).unwrap();
+            response[13] = b'f';
+            upstream.send_to(&response, client).await.unwrap();
+        });
+        let stats = Arc::new(SharedStats::new());
+        for _ in 0..stats::PARK_AFTER_FAILURES {
+            stats.record_timeout(upstream_addr).await;
+        }
+
+        let client = ClientQuery::new(
+            query(),
+            vec![upstream_addr.to_string()],
+            2,
+            4096,
+            stats.clone(),
+            load_balancer::LoadBalancingStrategy::Random,
+        );
+        assert!(client.process().await.is_err());
+
+        let snapshot = stats.get_stats().await;
+        let resolver = snapshot.get_resolver_stats(&upstream_addr).unwrap();
+        assert_eq!(resolver.success_count, 0);
+        assert_eq!(resolver.consecutive_failures, stats::PARK_AFTER_FAILURES);
     }
 
     #[test]
