@@ -1,17 +1,20 @@
 name: Release Binaries
 
 on:
-  release:
-    types: [created]
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version tag (e.g., v0.1.0)"
+        description: "Version label for a test build, nothing gets published (e.g., 0.2.1)"
         required: true
         default: "dev"
 
 permissions:
   contents: write
+
+env:
+  VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
 
 jobs:
   build-linux:
@@ -25,7 +28,7 @@ jobs:
           - features: "hooks"
             suffix: "-hooks"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -45,7 +48,6 @@ jobs:
 
       - name: Package binary
         run: |
-          VERSION="${{ github.event.release.tag_name || github.event.inputs.version }}"
           PACKAGE_NAME="etchdns-${VERSION}-linux-x86_64${{ matrix.suffix }}"
           mkdir -p "${PACKAGE_NAME}"
           cp target/x86_64-unknown-linux-gnu/release/etchdns "${PACKAGE_NAME}/"
@@ -63,17 +65,11 @@ jobs:
           tar -czf "${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: etchdns-linux-x86_64${{ matrix.suffix }}
           path: etchdns-*-linux-x86_64${{ matrix.suffix }}.tar.gz
           if-no-files-found: error
-
-      - name: Upload to release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v3.0.3
-        with:
-          files: etchdns-*-linux-x86_64${{ matrix.suffix }}.tar.gz
 
   build-macos:
     name: Build macOS
@@ -90,7 +86,7 @@ jobs:
           - ""
           - "hooks"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -110,7 +106,6 @@ jobs:
 
       - name: Package binary
         run: |
-          VERSION="${{ github.event.release.tag_name || github.event.inputs.version }}"
           SUFFIX=""
           if [ "${{ matrix.features }}" != "" ]; then
             SUFFIX="-${{ matrix.features }}"
@@ -132,17 +127,11 @@ jobs:
           zip -r "${PACKAGE_NAME}.zip" "${PACKAGE_NAME}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: etchdns-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}
           path: etchdns-*-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}.zip
           if-no-files-found: error
-
-      - name: Upload to release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v3.0.3
-        with:
-          files: etchdns-*-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}.zip
 
   # Create a combined artifact with all binaries
   combine-artifacts:
@@ -151,11 +140,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       digests: ${{ steps.hash.outputs.digests }}
-    env:
-      VERSION: ${{ github.event.release.tag_name || github.event.inputs.version }}
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: etchdns-*
           path: artifacts
@@ -187,7 +174,7 @@ jobs:
           echo "digests=$(printf '%s\n' "$subjects" | base64 -w0)" >> "$GITHUB_OUTPUT"
 
       - name: Upload combined artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: release-bundle
           path: |
@@ -195,11 +182,14 @@ jobs:
             etchdns-*-SHA256SUMS.txt
           if-no-files-found: error
 
-      - name: Upload combined artifact to release
-        if: github.event_name == 'release'
+      # Publishing from this single job avoids the build jobs racing to create the release.
+      - name: Publish release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3.0.3
         with:
+          fail_on_unmatched_files: true
           files: |
+            artifacts/*/*
             etchdns-*-all.tar.gz
             etchdns-*-SHA256SUMS.txt
 
@@ -212,4 +202,4 @@ jobs:
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.combine-artifacts.outputs.digests }}
-      upload-assets: ${{ github.event_name == 'release' }}
+      upload-assets: ${{ github.event_name == 'push' }}
