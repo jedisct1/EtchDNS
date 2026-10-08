@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use async_trait::async_trait;
 use clap::Parser;
 use log::{debug, error, info, warn};

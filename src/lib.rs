@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 // Export modules that need to be accessible from fuzzing tests
 pub mod allowed_zones;
 pub mod cache;
