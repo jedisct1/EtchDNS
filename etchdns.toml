@@ -75,6 +75,7 @@ cache_size = 100000
 
 # Whether this server is authoritative for DNS responses (default: false)
 # If false, TTLs in cached responses will be adjusted based on remaining time
+# If true, referrals also lose the addresses that don't belong to the zone making them
 authoritative_dns = false
 
 # Grace period in seconds to serve stale (expired) cache entries when upstream servers fail (default: 0)

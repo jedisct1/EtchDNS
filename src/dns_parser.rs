@@ -13,7 +13,6 @@ pub const DNS_OFFSET_QUESTION: usize = DNS_HEADER_SIZE; // Offset to the questio
 pub const DNS_MAX_UDP_PACKET_SIZE: usize = 512; // Standard maximum UDP packet size (RFC 1035)
 
 // DNS record types
-#[allow(dead_code)]
 pub const DNS_TYPE_A: u16 = 1;
 pub const DNS_TYPE_NS: u16 = 2;
 pub const DNS_TYPE_CNAME: u16 = 5;
@@ -23,10 +22,10 @@ pub const DNS_TYPE_PTR: u16 = 12;
 pub const DNS_TYPE_MX: u16 = 15;
 #[allow(dead_code)]
 pub const DNS_TYPE_TXT: u16 = 16;
-#[allow(dead_code)]
 pub const DNS_TYPE_AAAA: u16 = 28;
 pub const DNS_TYPE_SRV: u16 = 33;
 pub const DNS_TYPE_OPT: u16 = 41;
+pub const DNS_TYPE_RRSIG: u16 = 46;
 pub const DNS_TYPE_ANY: u16 = 255;
 
 // DNS classes
@@ -2757,6 +2756,193 @@ pub fn remove_edns_client_subnet(packet: &mut Vec<u8>) -> DnsResult<()> {
     Ok(())
 }
 
+/// Removes the addresses that a referral has no business carrying.
+///
+/// Shared DNS hosting can add an address from one customer's zone to a referral made by
+/// another customer's zone, and some resolvers use it.
+///
+/// We don't know which zone made the referral, but it always contains the parent of the
+/// delegated name.
+/// So in the additional section, we only keep the OPT record and the addresses under that
+/// parent, along with their signatures.
+///
+/// Returns how many records were removed.
+pub fn remove_out_of_bailiwick_glue(packet: &mut Vec<u8>) -> DnsResult<usize> {
+    let arcount = arcount(packet);
+    if flags(packet) & DNS_FLAGS_AA != 0
+        || rcode(packet) != 0
+        || qdcount(packet) != 1
+        || ancount(packet) != 0
+        || nscount(packet) == 0
+        || arcount == 0
+    {
+        return Ok(0);
+    }
+
+    let qname = name_labels(packet, DNS_OFFSET_QUESTION)?;
+    let mut offset = skip_name(packet, DNS_OFFSET_QUESTION)? + 4;
+    let mut delegation_depth = None;
+    for _ in 0..nscount(packet) {
+        let record = record_at(packet, offset)?;
+        if record.rr_type == DNS_TYPE_NS {
+            let owner = name_labels(packet, offset)?;
+            if is_subdomain(&qname, &owner) {
+                delegation_depth = delegation_depth.max(Some(owner.len()));
+            }
+        }
+        offset = record.end;
+    }
+    let Some(depth) = delegation_depth else {
+        return Ok(0);
+    };
+    let bailiwick = &qname[qname.len() - depth.saturating_sub(1)..];
+
+    let additional_start = offset;
+    let mut filtered = packet[..additional_start].to_vec();
+    let mut removed = 0u16;
+    for _ in 0..arcount {
+        let record = record_at(packet, offset)?;
+        let is_address = match record.rr_type {
+            DNS_TYPE_A | DNS_TYPE_AAAA => true,
+            DNS_TYPE_RRSIG => {
+                record.end - record.header >= 12
+                    && matches!(
+                        BigEndian::read_u16(&packet[record.header + 10..]),
+                        DNS_TYPE_A | DNS_TYPE_AAAA
+                    )
+            }
+            _ => false,
+        };
+        if record.rr_type == DNS_TYPE_OPT
+            || (is_address
+                && record.rr_class == DNS_CLASS_IN
+                && is_subdomain(&name_labels(packet, offset)?, bailiwick))
+        {
+            copy_name(packet, offset, additional_start, &mut filtered)?;
+            filtered.extend_from_slice(&packet[record.header..record.end]);
+        } else {
+            removed += 1;
+        }
+        offset = record.end;
+    }
+
+    if removed == 0 {
+        return Ok(0);
+    }
+    // Expanding names can make the packet bigger
+    if filtered.len() > DNS_MAX_PACKET_SIZE {
+        return Err(DnsError::PacketTooLarge {
+            size: filtered.len(),
+            max_size: DNS_MAX_PACKET_SIZE,
+        });
+    }
+    set_arcount(&mut filtered, arcount - removed)?;
+    *packet = filtered;
+    Ok(usize::from(removed))
+}
+
+struct Record {
+    rr_type: u16,
+    rr_class: u16,
+    /// Where the type field starts, right after the name
+    header: usize,
+    end: usize,
+}
+
+/// Reads the record whose name starts at `offset`.
+fn record_at(packet: &[u8], offset: usize) -> DnsResult<Record> {
+    let header = skip_name(packet, offset)?;
+    if packet.len().saturating_sub(header) < 10 {
+        return Err(DnsError::PacketTooShort { offset: header });
+    }
+    let end = header + 10 + BigEndian::read_u16(&packet[header + 8..]) as usize;
+    if end > packet.len() {
+        return Err(DnsError::InvalidRecord(
+            "Record length would exceed packet length".to_string(),
+        ));
+    }
+    Ok(Record {
+        rr_type: BigEndian::read_u16(&packet[header..]),
+        rr_class: BigEndian::read_u16(&packet[header + 2..]),
+        header,
+        end,
+    })
+}
+
+/// Splits a name into labels, following compression pointers.
+fn name_labels(packet: &[u8], mut offset: usize) -> DnsResult<Vec<&[u8]>> {
+    // Once skip_name() accepts the name, the loop below can't go out of bounds or run forever
+    skip_name(packet, offset)?;
+    let mut labels = Vec::new();
+    loop {
+        let len = packet[offset] as usize;
+        if len & 0xc0 == 0xc0 {
+            offset = ((len & 0x3f) << 8) | packet[offset + 1] as usize;
+        } else if len == 0 {
+            return Ok(labels);
+        } else {
+            labels.push(&packet[offset + 1..=offset + len]);
+            offset += 1 + len;
+        }
+    }
+}
+
+/// Tells whether `name` is `zone` or a name under it, ignoring case.
+fn is_subdomain(name: &[&[u8]], zone: &[&[u8]]) -> bool {
+    name.len() >= zone.len()
+        && name[name.len() - zone.len()..]
+            .iter()
+            .zip(zone)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
+/// Copies a name to `out`.
+///
+/// Everything from `limit` on is about to move, so pointers leading there are replaced by
+/// the labels they point to.
+fn copy_name(packet: &[u8], mut offset: usize, limit: usize, out: &mut Vec<u8>) -> DnsResult<()> {
+    skip_name(packet, offset)?;
+    loop {
+        let len = packet[offset] as usize;
+        if len & 0xc0 == 0xc0 {
+            let pointer = ((len & 0x3f) << 8) | packet[offset + 1] as usize;
+            if name_ends_before(packet, pointer, limit) {
+                out.extend_from_slice(&packet[offset..offset + 2]);
+                return Ok(());
+            }
+            offset = pointer;
+        } else {
+            out.extend_from_slice(&packet[offset..=offset + len]);
+            if len == 0 {
+                return Ok(());
+            }
+            offset += 1 + len;
+        }
+    }
+}
+
+/// Tells whether a name, and whatever its pointers lead to, is stored before `limit`.
+///
+/// The name must already have been checked with skip_name().
+fn name_ends_before(packet: &[u8], mut offset: usize, limit: usize) -> bool {
+    loop {
+        if offset >= limit {
+            return false;
+        }
+        let len = packet[offset] as usize;
+        if len & 0xc0 == 0xc0 {
+            if offset + 1 >= limit {
+                return false;
+            }
+            offset = ((len & 0x3f) << 8) | packet[offset + 1] as usize;
+        } else if len == 0 {
+            return true;
+        } else {
+            offset += 1 + len;
+        }
+    }
+}
+
 /// Checks an ECS response against the subnet in its query.
 pub fn edns_client_subnet_matches(query: &[u8], response: &[u8]) -> DnsResult<bool> {
     let Some(response_ecs) = extract_edns_client_subnet(response)? else {
@@ -2965,6 +3151,171 @@ mod overflow_tests {
         packet.resize(packet.len() + padding_len, 0);
         assert!(matches!(
             add_edns_client_subnet(&mut packet, "192.0.2.1", 24, 56, 1232),
+            Err(DnsError::PacketTooLarge { .. })
+        ));
+    }
+}
+
+#[cfg(test)]
+mod bailiwick_tests {
+    use super::*;
+
+    // Mixed case, like resolvers that randomize it
+    const QNAME: &str = "www.sub.EXAMPLE.com";
+
+    fn wire_name(name: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        for label in name.split('.').filter(|label| !label.is_empty()) {
+            out.push(label.len() as u8);
+            out.extend_from_slice(label.as_bytes());
+        }
+        out.push(0);
+        out
+    }
+
+    fn pointer(offset: usize) -> [u8; 2] {
+        (0xc000 | offset as u16).to_be_bytes()
+    }
+
+    fn rr(owner: &[u8], rr_type: u16, rdata: &[u8]) -> Vec<u8> {
+        let mut out = owner.to_vec();
+        out.extend_from_slice(&rr_type.to_be_bytes());
+        out.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        out.extend_from_slice(&300u32.to_be_bytes());
+        out.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        out.extend_from_slice(rdata);
+        out
+    }
+
+    fn referral(authority: &[Vec<u8>], additional: &[Vec<u8>]) -> Vec<u8> {
+        let mut packet = vec![0x12, 0x34, 0x80, 0x00, 0x00, 0x01, 0x00, 0x00];
+        packet.extend_from_slice(&(authority.len() as u16).to_be_bytes());
+        packet.extend_from_slice(&(additional.len() as u16).to_be_bytes());
+        packet.extend_from_slice(&wire_name(QNAME));
+        packet.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+        for record in authority.iter().chain(additional) {
+            packet.extend_from_slice(record);
+        }
+        packet
+    }
+
+    /// Delegates sub.EXAMPLE.com, which is at offset 16 in the question, to `ns`.
+    fn delegation(ns: &[u8]) -> Vec<u8> {
+        rr(&pointer(16), DNS_TYPE_NS, ns)
+    }
+
+    /// Where the data of the first NS record starts, after its name and fixed fields.
+    fn first_ns_data() -> usize {
+        referral(&[], &[]).len() + 12
+    }
+
+    #[test]
+    fn test_only_glue_under_the_parent_zone_is_kept() {
+        let authority = [
+            delegation(&wire_name("ns1.sub.example.com")),
+            delegation(&wire_name("ns2.example.com")),
+        ];
+        let in_domain = rr(&pointer(first_ns_data()), DNS_TYPE_A, &[192, 0, 2, 1]);
+        let sibling = rr(&wire_name("ns2.example.com"), DNS_TYPE_AAAA, &[0x20; 16]);
+        let sibling_signature = rr(
+            &wire_name("ns2.example.com"),
+            DNS_TYPE_RRSIG,
+            &DNS_TYPE_AAAA.to_be_bytes(),
+        );
+        let unrelated = rr(&wire_name("ns.example.net"), DNS_TYPE_A, &[198, 51, 100, 1]);
+        let not_an_address = rr(&wire_name("ns1.sub.example.com"), DNS_TYPE_TXT, b"\x02hi");
+
+        let mut packet = referral(
+            &authority,
+            &[
+                in_domain.clone(),
+                unrelated,
+                sibling.clone(),
+                not_an_address,
+                sibling_signature.clone(),
+            ],
+        );
+        let mut expected = referral(&authority, &[in_domain, sibling, sibling_signature]);
+        add_edns_section(&mut packet, 1232).unwrap();
+        add_edns_section(&mut expected, 1232).unwrap();
+
+        assert_eq!(remove_out_of_bailiwick_glue(&mut packet).unwrap(), 2);
+        assert_eq!(packet, expected);
+    }
+
+    #[test]
+    fn test_pointers_to_moved_records_are_expanded() {
+        // The NS data stops after "ns1", so that name goes on with the name of the TXT record
+        let authority = [delegation(b"\x03ns1")];
+        let txt_name = pointer(referral(&authority, &[]).len());
+        let mut packet = referral(
+            &authority,
+            &[
+                rr(&wire_name("example.com"), DNS_TYPE_TXT, b"\x02hi"),
+                rr(&pointer(first_ns_data()), DNS_TYPE_A, &[192, 0, 2, 1]),
+                rr(
+                    &[b"\x03ns2", &txt_name[..]].concat(),
+                    DNS_TYPE_A,
+                    &[192, 0, 2, 2],
+                ),
+            ],
+        );
+        assert!(validate_dns_response(&packet).is_ok());
+
+        let expected = referral(
+            &authority,
+            &[
+                rr(&wire_name("ns1.example.com"), DNS_TYPE_A, &[192, 0, 2, 1]),
+                rr(&wire_name("ns2.example.com"), DNS_TYPE_A, &[192, 0, 2, 2]),
+            ],
+        );
+        assert_eq!(remove_out_of_bailiwick_glue(&mut packet).unwrap(), 1);
+        assert_eq!(packet, expected);
+    }
+
+    #[test]
+    fn test_other_responses_are_left_alone() {
+        let glue = || rr(&wire_name("ns.example.net"), DNS_TYPE_A, &[198, 51, 100, 1]);
+        let mut authoritative = referral(&[delegation(&wire_name("ns.example.net"))], &[glue()]);
+        set_aa(&mut authoritative, true).unwrap();
+        let other_name = rr(
+            &wire_name("other.example.com"),
+            DNS_TYPE_NS,
+            &wire_name("ns.example.net"),
+        );
+        let root = rr(&[0], DNS_TYPE_NS, &wire_name("a.root-servers.net"));
+
+        for mut packet in [
+            authoritative,
+            referral(&[other_name], &[glue()]),
+            // Every name is under the root
+            referral(&[root], &[glue()]),
+        ] {
+            assert_eq!(remove_out_of_bailiwick_glue(&mut packet).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn test_malformed_or_oversized_results_are_errors() {
+        let authority = [delegation(&wire_name("ns.example.com"))];
+
+        let glue = rr(&wire_name("ns.example.net"), DNS_TYPE_A, &[198, 51, 100, 1]);
+        let mut truncated = referral(&authority, &[glue]);
+        truncated.pop();
+        assert!(remove_out_of_bailiwick_glue(&mut truncated).is_err());
+
+        // Once the TXT record is gone, its long name has to be written out in all 30 A records
+        let long_name = format!("{}example.com", "abcdefghijklmnopqrstuvwxyz.".repeat(8));
+        let a_long_name = [b"\x01a", &pointer(referral(&authority, &[]).len())[..]].concat();
+        let mut additional = vec![rr(&wire_name(&long_name), DNS_TYPE_TXT, b"\x02hi")];
+        additional.extend(std::iter::repeat_n(
+            rr(&a_long_name, DNS_TYPE_A, &[192, 0, 2, 3]),
+            30,
+        ));
+        let mut too_large = referral(&authority, &additional);
+        assert!(validate_dns_response(&too_large).is_ok());
+        assert!(matches!(
+            remove_out_of_bailiwick_glue(&mut too_large),
             Err(DnsError::PacketTooLarge { .. })
         ));
     }

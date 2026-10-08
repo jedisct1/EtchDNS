@@ -507,20 +507,23 @@ impl QueryManager {
                 match tokio::time::timeout(timeout_duration, resolver(query_data.clone())).await {
                     Ok(result) => {
                         // The resolver completed within the timeout
-                        match result {
-                            Ok(response_data) => {
-                                #[allow(clippy::question_mark)]
-                                if crate::dns_parser::validate_dns_response(&response_data).is_err()
-                                {
+                        let result = result.and_then(|mut response_data| {
+                            crate::dns_parser::validate_dns_response(&response_data)?;
+                            if self_clone.authoritative_dns {
+                                let removed = crate::dns_parser::remove_out_of_bailiwick_glue(
+                                    &mut response_data,
+                                )?;
+                                if removed > 0 {
                                     log::debug!(
-                                        "Received invalid response packet for {}",
+                                        "Removed {removed} out-of-bailiwick records from the referral for {}",
                                         key_clone.name
                                     );
-                                    break 'resolve DnsResponse {
-                                        data: Vec::new(),
-                                        error: Some("Invalid response packet".to_string()),
-                                    };
                                 }
+                            }
+                            Ok(response_data)
+                        });
+                        match result {
+                            Ok(response_data) => {
                                 // Check if the response is a SERVFAIL and we should serve stale entries
                                 #[allow(clippy::nonminimal_bool)]
                                 if self_clone.serve_stale_grace_time > 0
@@ -1447,6 +1450,49 @@ mod tests {
             response[2..4].copy_from_slice(&flags);
             manager.cache_dns_response(&cache, &key, &response);
             assert!(cache.get(&key).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_out_of_bailiwick_glue_is_removed_in_authoritative_mode() {
+        // What ns1.xvps.ne.jp sent for blog.alice.poc.debiru.net: a referral to
+        // ns.lavoscore.org, with an address for it from a zone someone else created there
+        let hex = concat!(
+            "12348000000100000001000204626c6f6705616c69636503706f6306646562697275036e6574",
+            "0000010001c00c000200010000012c0012026e73096c61766f73636f7265036f726700",
+            "c037000100010000012c00049d7095f3",
+            "0000290690000000000000",
+        );
+        let referral: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let query = crate::dns_parser::recover_question_from_response(&referral).unwrap();
+        let key = DNSKey::from_packet(&query).unwrap();
+
+        // The address goes away, the OPT record stays
+        for (authoritative_dns, arcount) in [(false, 2), (true, 1)] {
+            let mut query_manager = QueryManager::for_tests(1, 512, true);
+            query_manager.authoritative_dns = authoritative_dns;
+            let cache = create_dns_cache(10);
+            query_manager.set_cache(cache.clone());
+
+            let upstream_response = referral.clone();
+            let resolver = move |_data: Vec<u8>| {
+                Box::pin(std::future::ready(Ok(upstream_response.clone())))
+                    as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+            };
+            let mut receiver = query_manager
+                .submit_query_with_client(key.clone(), query.clone(), resolver, "192.0.2.1:5353")
+                .await
+                .unwrap();
+            let response = receiver.recv().await.unwrap();
+
+            assert_eq!(crate::dns_parser::arcount(&response.data), arcount);
+            assert_eq!(
+                crate::dns_parser::arcount(&cache.get(&key).unwrap().data),
+                arcount
+            );
         }
     }
 
