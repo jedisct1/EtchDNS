@@ -34,7 +34,7 @@ default = []
 hooks = ["extism"]
 
 [dependencies]
-bpf = "0.1.4"
+bpf = "0.1.5"
 tokio = { version = "1", features = ["full"] }
 log = "0.4"
 env_logger = "0.11"
@@ -46,23 +46,23 @@ anyhow = "1.0"
 thiserror = "2.0"
 async-trait = "0.1"
 slabigator = "0.9"
-time-format = "1.2.3"
+time-format = "1.2.4"
 rand = "0.10"
 byteorder = "1.5"
 futures = "0.3.34"
-hyper = { version = "1.11", features = ["server", "http1"] }
+hyper = { version = "1.12", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
 http-body-util = "0.1"
 bytes = "1.12"
 tower = "0.5"
 tower-http = { version = "0.7", features = ["limit"] }
-sieve-cache = "1.1.6"
+sieve-cache = "1.2.0"
 base64 = "0.23"
 form_urlencoded = "1.2"
 extism = { version = "1.30.0", optional = true }
-privdrop = "0.5.6"
+privdrop = "0.5.7"
 httpdate = "1.0.3"
 
 [dev-dependencies]
 tempfile = "3.27.0"
-tokio-test = "0.4.5"
+tokio-test = "0.4.6"
