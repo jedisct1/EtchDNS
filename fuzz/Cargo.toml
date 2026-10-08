@@ -102,3 +102,11 @@ path = "fuzz_targets/extract_edns_version.rs"
 test = false
 doc = false
 bench = false
+
+# Fuzz target for dns_parser::remove_out_of_bailiwick_glue
+[[bin]]
+name = "remove_out_of_bailiwick_glue"
+path = "fuzz_targets/remove_out_of_bailiwick_glue.rs"
+test = false
+doc = false
+bench = false

@@ -25,6 +25,7 @@ The following fuzz targets are available:
 9. `ip_range_from_cidr` - Tests `IpRange::from_cidr` CIDR parsing
 10. `ip_validator_validate` - Tests `IpValidator::validate_ip_str`
 11. `rate_limiter_is_allowed` - Tests `RateLimiter::is_allowed`
+12. `remove_out_of_bailiwick_glue` - Tests `dns_parser::remove_out_of_bailiwick_glue`
 
 ## Running the Fuzzing Tests
 
@@ -42,6 +43,7 @@ cargo fuzz run dns_key_from_packet
 cargo fuzz run ip_range_from_cidr
 cargo fuzz run ip_validator_validate
 cargo fuzz run rate_limiter_is_allowed
+cargo fuzz run remove_out_of_bailiwick_glue
 ```
 
 ## Corpus
