@@ -3,6 +3,7 @@
 // Export modules that need to be accessible from fuzzing tests
 pub mod allowed_zones;
 pub mod cache;
+pub mod connection_slots;
 pub mod control;
 pub mod dns_key;
 pub mod dns_parser;

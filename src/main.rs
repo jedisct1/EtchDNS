@@ -5,22 +5,21 @@ use clap::Parser;
 use log::{debug, error, info, warn};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-use slabigator::Slab;
 use std::fs;
 use std::net::SocketAddr;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 
 use ip_validator::{IpRange, IpValidator};
 
 mod allowed_zones;
 mod cache;
+mod connection_slots;
 mod control;
 mod dns_key;
 mod dns_key_test;
@@ -42,6 +41,7 @@ mod resolver;
 mod stats;
 
 // Use our error types
+use connection_slots::{ClientSlots, ConnectionSlots};
 use dns_processor::DnsQueryProcessor;
 use errors::{DnsError, EtchDnsError, EtchDnsResult};
 use probe::probe_server;
@@ -80,11 +80,11 @@ struct Config {
     #[serde(default = "default_packet_size")]
     dns_packet_len_max: usize,
 
-    /// Maximum number of UDP clients to keep in the slab
+    /// Maximum number of UDP queries handled at the same time
     #[serde(default = "default_max_udp_clients")]
     max_udp_clients: usize,
 
-    /// Maximum number of TCP clients to keep in the slab
+    /// Maximum number of open TCP connections
     #[serde(default = "default_max_tcp_clients")]
     max_tcp_clients: usize,
 
@@ -1392,35 +1392,34 @@ async fn bind_tcp_listener(
     })
 }
 
+/// Runs a client task in the background.
+/// The task is stopped if a newer client takes its place.
+///
+/// Returns `false` if there is no room for the client.
+fn spawn_in_slot(
+    slots: &ClientSlots,
+    addr: SocketAddr,
+    task: impl Future<Output = ()> + Send + 'static,
+) -> bool {
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    let Some(slot) = ConnectionSlots::register(slots, addr.ip(), cancel_tx) else {
+        return false;
+    };
+    tokio::spawn(async move {
+        let _slot = slot;
+        tokio::select! {
+            _ = task => {}
+            _ = cancel_rx => debug!("Client {addr} was replaced by a newer client"),
+        }
+    });
+    true
+}
+
 /// Trait for different types of clients
 #[async_trait]
 trait Client {
     /// Process a DNS query
-    ///
-    /// # Arguments
-    ///
-    /// * `cancel_rx` - A oneshot receiver that can be used to cancel the query processing
-    async fn process_query(&self, cancel_rx: tokio::sync::oneshot::Receiver<()>);
-}
-
-struct TrackedUdpClient {
-    token: Arc<()>,
-    cancel_tx: tokio::sync::oneshot::Sender<()>,
-}
-
-fn remove_tracked_udp_client(
-    slab: &mut Slab<TrackedUdpClient>,
-    slot: slabigator::Slot,
-    token: &Arc<()>,
-) -> Result<bool, slabigator::Error> {
-    if !slab
-        .get(slot)
-        .is_ok_and(|client| Arc::ptr_eq(&client.token, token))
-    {
-        return Ok(false);
-    }
-    slab.remove(slot)?;
-    Ok(true)
+    async fn process_query(&self);
 }
 
 /// Structure to handle UDP clients
@@ -1578,7 +1577,6 @@ impl TCPClient {
 /// * `addr` - The client's address
 /// * `upstream_servers` - The upstream DNS servers to forward queries to
 /// * `query_manager` - The query manager for aggregating identical DNS queries
-/// * `tcp_clients_slab` - The slab for storing TCP clients
 /// * `dns_packet_len_max` - The maximum DNS packet size
 /// * `server_timeout` - The timeout for TCP connections in seconds
 ///
@@ -1698,12 +1696,8 @@ async fn process_tcp_connection(
                                             stream_arc.clone(),
                                         );
 
-                                        let (cancel_tx, cancel_rx) =
-                                            tokio::sync::oneshot::channel();
-
                                         // Process the client query directly
-                                        client.process_query(cancel_rx).await;
-                                        drop(cancel_tx);
+                                        client.process_query().await;
                                         debug!("Completed processing task for TCP client {addr}");
                                     }
                                     Err(e) => {
@@ -1749,7 +1743,7 @@ impl DnsQueryProcessor for UDPClient {}
 
 #[async_trait]
 impl Client for TCPClient {
-    async fn process_query(&self, cancel_rx: tokio::sync::oneshot::Receiver<()>) {
+    async fn process_query(&self) {
         // Process the DNS query
         let client_addr = self.addr.to_string();
 
@@ -1768,20 +1762,15 @@ impl Client for TCPClient {
 
         // Apply a timeout of twice the server_timeout to the query future
         let timeout_duration = std::time::Duration::from_secs(self.query.server_timeout * 2);
-        let timed_query_future = tokio::time::timeout(timeout_duration, query_future);
-
-        // Use tokio::select to handle both the query result and cancellation
-        let response_opt = tokio::select! {
-            _ = cancel_rx => {
-                debug!("TCP query for client {} cancelled", self.addr);
+        let response_opt = match tokio::time::timeout(timeout_duration, query_future).await {
+            Ok(response) => response,
+            Err(_) => {
+                debug!(
+                    "TCP query for client {} timed out after {} seconds",
+                    self.addr,
+                    self.query.server_timeout * 2
+                );
                 None
-            },
-            result = timed_query_future => match result {
-                Ok(response) => response,
-                Err(_) => {
-                    debug!("TCP query for client {} timed out after {} seconds", self.addr, self.query.server_timeout * 2);
-                    None
-                }
             }
         };
 
@@ -1821,7 +1810,7 @@ impl Client for TCPClient {
 
 #[async_trait]
 impl Client for UDPClient {
-    async fn process_query(&self, cancel_rx: tokio::sync::oneshot::Receiver<()>) {
+    async fn process_query(&self) {
         // Process the DNS query
         let client_addr = self.addr.to_string();
 
@@ -1840,20 +1829,15 @@ impl Client for UDPClient {
 
         // Apply a timeout of twice the server_timeout to the query future
         let timeout_duration = std::time::Duration::from_secs(self.query.server_timeout * 2);
-        let timed_query_future = tokio::time::timeout(timeout_duration, query_future);
-
-        // Use tokio::select to handle both the query result and cancellation
-        let response_opt = tokio::select! {
-            _ = cancel_rx => {
-                debug!("UDP query for client {} cancelled", self.addr);
+        let response_opt = match tokio::time::timeout(timeout_duration, query_future).await {
+            Ok(response) => response,
+            Err(_) => {
+                debug!(
+                    "UDP query for client {} timed out after {} seconds",
+                    self.addr,
+                    self.query.server_timeout * 2
+                );
                 None
-            },
-            result = timed_query_future => match result {
-                Ok(response) => response,
-                Err(_) => {
-                    debug!("UDP query for client {} timed out after {} seconds", self.addr, self.query.server_timeout * 2);
-                    None
-                }
             }
         };
 
@@ -2052,32 +2036,12 @@ async fn main() -> EtchDnsResult<()> {
         config.dns_packet_len_max
     );
 
-    // Create slabs for clients with the configured maximum sizes
-    let max_udp_clients = config.max_udp_clients;
-    let max_tcp_clients = config.max_tcp_clients;
     debug!(
-        "Using a maximum of {max_udp_clients} UDP clients and {max_tcp_clients} TCP clients in the slabs"
+        "Using a maximum of {} UDP clients and {} TCP clients",
+        config.max_udp_clients, config.max_tcp_clients
     );
-    let udp_clients_slab: Arc<Mutex<Slab<TrackedUdpClient>>> = {
-        let slab = match Slab::with_capacity(max_udp_clients) {
-            Ok(slab) => slab,
-            Err(e) => {
-                error!(
-                    "Failed to create UDP clients slab with requested capacity of {max_udp_clients}: {e}"
-                );
-                // Fall back to a smaller size if allocation fails
-                let smaller_capacity = std::cmp::max(100, max_udp_clients / 2);
-                warn!("Falling back to smaller UDP client slab capacity: {smaller_capacity}");
-                Slab::with_capacity(smaller_capacity)
-                    .unwrap_or_else(|e| {
-                        panic!("Critical error: Failed to allocate even minimal UDP slab with capacity {smaller_capacity}: {e}")
-                    })
-            }
-        };
-        Arc::new(Mutex::new(slab))
-    };
-    let active_udp_clients = Arc::new(AtomicUsize::new(0));
-    let tcp_connection_limit = Arc::new(Semaphore::new(max_tcp_clients));
+    let udp_clients: ClientSlots = Arc::new(ConnectionSlots::new(config.max_udp_clients).into());
+    let tcp_clients: ClientSlots = Arc::new(ConnectionSlots::new(config.max_tcp_clients).into());
 
     // Create global statistics tracker
     let global_stats = Arc::new(SharedStats::new());
@@ -2434,8 +2398,8 @@ async fn main() -> EtchDnsResult<()> {
         let stats = global_stats.clone();
         let max_metrics_connections = config.max_metrics_connections;
         let metrics_query_manager = query_manager.clone();
-        let metrics_active_udp_clients = active_udp_clients.clone();
-        let metrics_tcp_connection_limit = tcp_connection_limit.clone();
+        let metrics_udp_clients = udp_clients.clone();
+        let metrics_tcp_clients = tcp_clients.clone();
         let metrics_dns_cache = dns_cache.clone();
 
         // Create a task for the metrics server
@@ -2446,8 +2410,8 @@ async fn main() -> EtchDnsResult<()> {
                 stats,
                 max_metrics_connections,
                 Some(metrics_query_manager),
-                Some(metrics_active_udp_clients),
-                Some((metrics_tcp_connection_limit, max_tcp_clients)),
+                Some(metrics_udp_clients),
+                Some(metrics_tcp_clients),
                 Some(metrics_dns_cache),
             )
             .await
@@ -2545,8 +2509,7 @@ async fn main() -> EtchDnsResult<()> {
         let socket = socket.clone();
         let all_socket_addrs = socket_addrs.clone();
         let socket_addr = (*all_socket_addrs)[i];
-        let udp_clients_slab = udp_clients_slab.clone();
-        let active_udp_clients = active_udp_clients.clone();
+        let udp_clients = udp_clients.clone();
         let upstream_servers = upstream_servers.clone();
         let query_manager = query_manager.clone();
         let udp_rate_limiter = udp_rate_limiter.clone();
@@ -2627,82 +2590,14 @@ async fn main() -> EtchDnsResult<()> {
                             query_manager.clone(),
                         );
 
-                        // Spawn a new task to handle the response
-                        let udp_clients_slab_clone = udp_clients_slab.clone();
-                        let active_udp_clients = active_udp_clients.clone();
-                        tokio::spawn(async move {
+                        let task = async move {
                             debug!("Started processing task for UDP client {addr}");
-
-                            // Cancelation channel for the query
-                            let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-                            let client_token = Arc::new(());
-
-                            // Add the client to the slab
-                            let client_slot = {
-                                let mut slab = udp_clients_slab_clone.lock().await;
-
-                                // If the slab is full, remove the oldest entry
-                                if slab.is_full() {
-                                    debug!("UDP slab is full, removing oldest client");
-                                    // Remove the oldest client from the slab
-                                    if let Some(client) = slab.pop_back() {
-                                        client.cancel_tx.send(()).ok();
-                                    }
-                                }
-
-                                // Add the new client to the front of the slab
-                                let slot = slab
-                                    .push_front(TrackedUdpClient {
-                                        token: client_token.clone(),
-                                        cancel_tx,
-                                    })
-                                    .expect("Failed to add UDP client to slab");
-                                active_udp_clients.store(slab.len(), Ordering::Relaxed);
-
-                                // No need to manually track UDP clients, we now use slab length directly
-
-                                debug!(
-                                    "Added UDP client to slab with slot {}, slab size: {}",
-                                    slot,
-                                    slab.len()
-                                );
-                                slot
-                            };
-
-                            // Process the client query
-                            client.process_query(cancel_rx).await;
+                            client.process_query().await;
                             debug!("Completed processing task for UDP client {addr}");
-
-                            // Remove the client from the slab
-                            {
-                                let mut slab = udp_clients_slab_clone.lock().await;
-
-                                match remove_tracked_udp_client(
-                                    &mut slab,
-                                    client_slot,
-                                    &client_token,
-                                ) {
-                                    Ok(true) => {
-                                        debug!(
-                                            "Removed UDP client {addr} from slab with slot {}, slab size: {}",
-                                            client_slot,
-                                            slab.len()
-                                        );
-                                    }
-                                    Ok(false) => {
-                                        debug!(
-                                            "UDP client {addr} no longer owns reused slab slot {client_slot}"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Failed to remove UDP client {addr} from slab (slot {client_slot}): {e}"
-                                        );
-                                    }
-                                }
-                                active_udp_clients.store(slab.len(), Ordering::Relaxed);
-                            }
-                        });
+                        };
+                        if !spawn_in_slot(&udp_clients, addr, task) {
+                            warn!("Maximum UDP client count reached, dropping query from {addr}");
+                        }
                     }
                     Err(e) => {
                         error!("Failed to receive packet on UDP {socket_addr}: {e}");
@@ -2729,7 +2624,7 @@ async fn main() -> EtchDnsResult<()> {
         let listener = listener.clone();
         let all_socket_addrs = tcp_socket_addrs.clone();
         let socket_addr = (*all_socket_addrs)[i];
-        let tcp_connection_limit = tcp_connection_limit.clone();
+        let tcp_clients = tcp_clients.clone();
         let upstream_servers = upstream_servers.clone();
         let query_manager = query_manager.clone();
         let tcp_rate_limiter = tcp_rate_limiter.clone();
@@ -2779,30 +2674,13 @@ async fn main() -> EtchDnsResult<()> {
                             }
                         }
 
-                        let connection_permit = match tcp_connection_limit
-                            .clone()
-                            .try_acquire_owned()
-                        {
-                            Ok(permit) => permit,
-                            Err(_) => {
-                                warn!(
-                                    "Maximum TCP client count reached, dropping connection from {addr}"
-                                );
-                                continue;
-                            }
-                        };
-
                         // Clone the necessary values for the task
                         let upstream_servers = upstream_servers.clone();
                         let query_manager = query_manager.clone();
                         let tcp_rate_limiter = tcp_rate_limiter.clone();
 
-                        // Spawn a new task to handle the TCP connection
-                        tokio::spawn(async move {
-                            let _connection_permit = connection_permit;
+                        let task = async move {
                             debug!("Started TCP connection handler for client {addr}");
-
-                            // Process the TCP connection
                             process_tcp_connection(
                                 stream,
                                 addr,
@@ -2813,9 +2691,13 @@ async fn main() -> EtchDnsResult<()> {
                                 tcp_rate_limiter,
                             )
                             .await;
-
                             debug!("Completed TCP connection handler for client {addr}");
-                        });
+                        };
+                        if !spawn_in_slot(&tcp_clients, addr, task) {
+                            warn!(
+                                "Maximum TCP client count reached, dropping connection from {addr}"
+                            );
+                        }
                     }
                     Err(e) => {
                         error!("Failed to accept TCP connection on {socket_addr}: {e}");
@@ -3075,34 +2957,6 @@ mod tests {
         let resolver = snapshot.get_resolver_stats(&upstream_addr).unwrap();
         assert_eq!(resolver.success_count, 0);
         assert_eq!(resolver.consecutive_failures, stats::PARK_AFTER_FAILURES);
-    }
-
-    #[test]
-    fn test_reused_udp_slot_is_not_removed_by_old_task() {
-        let mut slab = Slab::with_capacity(1).unwrap();
-        let old_token = Arc::new(());
-        let (old_cancel, _) = tokio::sync::oneshot::channel();
-        let old_slot = slab
-            .push_front(TrackedUdpClient {
-                token: old_token.clone(),
-                cancel_tx: old_cancel,
-            })
-            .unwrap();
-        slab.pop_back().unwrap();
-
-        let new_token = Arc::new(());
-        let (new_cancel, _) = tokio::sync::oneshot::channel();
-        let new_slot = slab
-            .push_front(TrackedUdpClient {
-                token: new_token.clone(),
-                cancel_tx: new_cancel,
-            })
-            .unwrap();
-        assert_eq!(old_slot, new_slot);
-
-        assert!(!remove_tracked_udp_client(&mut slab, old_slot, &old_token).unwrap());
-        assert_eq!(slab.len(), 1);
-        assert!(remove_tracked_udp_client(&mut slab, new_slot, &new_token).unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

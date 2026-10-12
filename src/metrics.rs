@@ -1,3 +1,4 @@
+use crate::connection_slots::ClientSlots;
 use crate::stats::{GlobalStats, SharedStats};
 use bytes::Bytes;
 use http_body_util::Full;
@@ -5,7 +6,6 @@ use hyper::{Request, Response, StatusCode, server::conn::http1};
 use hyper_util::rt::TokioIo;
 use log::info;
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 use tokio::net::TcpListener;
@@ -266,8 +266,8 @@ async fn handle_request(
     stats: Arc<SharedStats>,
     metrics_path: String,
     query_manager: Option<Arc<crate::query_manager::QueryManager>>,
-    active_udp_clients: Option<Arc<AtomicUsize>>,
-    tcp_connection_limit: Option<(Arc<Semaphore>, usize)>,
+    udp_clients: Option<ClientSlots>,
+    tcp_clients: Option<ClientSlots>,
     dns_cache: Option<Arc<crate::cache::SyncDnsCache>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
@@ -282,16 +282,8 @@ async fn handle_request(
             None => 0, // Default to 0 if query manager isn't available
         };
 
-        // Get the number of active UDP clients
-        let active_udp_clients = active_udp_clients
-            .as_ref()
-            .map_or(0, |count| count.load(Ordering::Relaxed));
-
-        // Get the number of active TCP clients
-        let active_tcp_clients = match &tcp_connection_limit {
-            Some((semaphore, capacity)) => capacity.saturating_sub(semaphore.available_permits()),
-            None => 0,
-        };
+        let active_udp_clients = udp_clients.as_ref().map_or(0, |slots| slots.lock().len());
+        let active_tcp_clients = tcp_clients.as_ref().map_or(0, |slots| slots.lock().len());
 
         // Get cache metrics if available
         let (cache_size, cache_capacity) = match &dns_cache {
@@ -326,8 +318,8 @@ pub async fn start_metrics_server(
     stats: Arc<SharedStats>,
     max_connections: usize,
     query_manager: Option<Arc<crate::query_manager::QueryManager>>,
-    active_udp_clients: Option<Arc<AtomicUsize>>,
-    tcp_connection_limit: Option<(Arc<Semaphore>, usize)>,
+    udp_clients: Option<ClientSlots>,
+    tcp_clients: Option<ClientSlots>,
     dns_cache: Option<Arc<crate::cache::SyncDnsCache>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_start_time();
@@ -349,8 +341,8 @@ pub async fn start_metrics_server(
         let metrics_path = metrics_path.clone();
         let semaphore = semaphore.clone();
         let query_manager = query_manager.clone();
-        let active_udp_clients = active_udp_clients.clone();
-        let tcp_connection_limit = tcp_connection_limit.clone();
+        let udp_clients = udp_clients.clone();
+        let tcp_clients = tcp_clients.clone();
         let dns_cache = dns_cache.clone();
 
         // Spawn a task to handle the connection
@@ -369,8 +361,8 @@ pub async fn start_metrics_server(
                 let stats = stats.clone();
                 let metrics_path = metrics_path.clone();
                 let query_manager = query_manager.clone();
-                let active_udp_clients = active_udp_clients.clone();
-                let tcp_connection_limit = tcp_connection_limit.clone();
+                let udp_clients = udp_clients.clone();
+                let tcp_clients = tcp_clients.clone();
                 let dns_cache = dns_cache.clone();
                 async move {
                     handle_request(
@@ -378,8 +370,8 @@ pub async fn start_metrics_server(
                         stats,
                         metrics_path,
                         query_manager,
-                        active_udp_clients,
-                        tcp_connection_limit,
+                        udp_clients,
+                        tcp_clients,
                         dns_cache,
                     )
                     .await
