@@ -337,13 +337,19 @@ impl QueryManager {
     async fn submit_query_internal_with_client(
         &self,
         mut key: DNSKey,
-        query_data: Vec<u8>,
+        mut query_data: Vec<u8>,
         resolver: impl Fn(Vec<u8>) -> futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
         + Send
         + Sync
         + 'static,
         client_ip: &str,
     ) -> EtchDnsResult<broadcast::Receiver<DnsResponse>> {
+        // A client's cookie must not reach the upstream server or other clients
+        crate::dns_parser::remove_edns_option(
+            &mut query_data,
+            crate::dns_parser::EDNS_OPTION_COOKIE,
+        )?;
+
         if self.enable_ecs {
             key.set_client_subnet(client_ip, self.ecs_prefix_v4, self.ecs_prefix_v6);
         }
@@ -509,6 +515,11 @@ impl QueryManager {
                         // The resolver completed within the timeout
                         let result = result.and_then(|mut response_data| {
                             crate::dns_parser::validate_dns_response(&response_data)?;
+                            // The upstream server's cookie must not be cached or passed on
+                            crate::dns_parser::remove_edns_option(
+                                &mut response_data,
+                                crate::dns_parser::EDNS_OPTION_COOKIE,
+                            )?;
                             if self_clone.authoritative_dns {
                                 let removed = crate::dns_parser::remove_out_of_bailiwick_glue(
                                     &mut response_data,

@@ -195,9 +195,6 @@ pub trait DnsQueryProcessor {
             }
         };
 
-        // Get the client query ID once to avoid multiple calls
-        let client_query_id = crate::dns_parser::tid(query_data);
-
         // Extract client IP and prepare the resolver
         let client_ip = extract_client_ip(client_addr);
         let resolver = prepare_resolver(
@@ -211,16 +208,9 @@ pub trait DnsQueryProcessor {
         );
 
         // Submit the query and handle the response
-        submit_query_and_get_response(
-            query_manager,
-            dns_key,
-            query_data,
-            resolver,
-            client_addr,
-            client_query_id,
-        )
-        .await
-        .map(|response_data| (response_data, client_query_id))
+        submit_query_and_get_response(query_manager, dns_key, query_data, resolver, client_addr)
+            .await
+            .map(|response_data| (response_data, crate::dns_parser::tid(query_data)))
     }
 }
 
@@ -312,7 +302,6 @@ fn prepare_resolver(
 /// * `query_data` - The raw DNS query data
 /// * `resolver` - The resolver function to use for upstream queries
 /// * `client_addr` - String representation of the client address for logging
-/// * `client_query_id` - The client's transaction ID
 ///
 /// # Returns
 ///
@@ -326,7 +315,6 @@ async fn submit_query_and_get_response(
     + Sync
     + 'static,
     client_addr: &str,
-    client_query_id: u16,
 ) -> Option<Vec<u8>> {
     // Submit the query to the query manager with client address
     match query_manager
@@ -336,14 +324,7 @@ async fn submit_query_and_get_response(
         Ok(mut receiver) => {
             // Wait for the response
             match receiver.recv().await {
-                Ok(response) => {
-                    // Process the response
-                    let client_had_ecs = dns_parser::extract_edns_client_subnet(query_data)
-                        .ok()
-                        .flatten()
-                        .is_some();
-                    process_dns_response(response, client_query_id, client_addr, client_had_ecs)
-                }
+                Ok(response) => process_dns_response(response, query_data, client_addr),
                 Err(e) => {
                     log::debug!("Failed to receive response from query manager: {e}");
                     log::debug!("Error details: {e:?}");
@@ -359,25 +340,16 @@ async fn submit_query_and_get_response(
     }
 }
 
-/// Processes a DNS response and updates the transaction ID
+/// Prepares a response for the client that sent `query_data`.
 ///
-/// This function takes a DNS response from the query manager, updates the transaction ID
-/// to match the client's original query ID, and returns the processed response data.
+/// The same response can be sent to several clients, or come from the cache.
+/// Each client gets its own transaction ID and question case back.
 ///
-/// # Arguments
-///
-/// * `response` - The DNS response from the query manager
-/// * `client_query_id` - The client's original transaction ID
-/// * `client_addr` - String representation of the client address for logging
-///
-/// # Returns
-///
-/// An Option containing the processed response data if successful, or None if an error occurred
+/// Returns None if the response can't be sent to this client.
 fn process_dns_response(
     response: crate::query_manager::DnsResponse,
-    client_query_id: u16,
+    query_data: &[u8],
     client_addr: &str,
-    client_had_ecs: bool,
 ) -> Option<Vec<u8>> {
     // Check if the response contains an error
     if let Some(error_msg) = response.error {
@@ -389,21 +361,20 @@ fn process_dns_response(
 
     // Get the response data (no need to clone as we own it)
     let mut response_data = response.data;
-
-    // Replace the query ID in the response with the client's query ID
-    if let Err(e) = crate::dns_parser::set_tid(&mut response_data, client_query_id) {
-        log::debug!("Failed to set transaction ID in response: {e}");
-        None
-    } else {
-        if !client_had_ecs
-            && let Err(e) = crate::dns_parser::remove_edns_client_subnet(&mut response_data)
-        {
-            log::debug!("Failed to remove ECS from client response: {e}");
-            return None;
-        }
-        log::debug!("Replaced response transaction ID with client query ID: {client_query_id}");
-        Some(response_data)
+    if let Err(e) = adapt_to_client(&mut response_data, query_data) {
+        log::debug!("Failed to adapt the response for client {client_addr}: {e}");
+        return None;
     }
+    Some(response_data)
+}
+
+fn adapt_to_client(response: &mut Vec<u8>, query: &[u8]) -> DnsResult<()> {
+    dns_parser::set_tid(response, dns_parser::tid(query))?;
+    dns_parser::restore_qname_case(response, query)?;
+    if !matches!(dns_parser::extract_edns_client_subnet(query), Ok(Some(_))) {
+        dns_parser::remove_edns_option(response, dns_parser::EDNS_OPTION_CLIENT_SUBNET)?;
+    }
+    Ok(())
 }
 
 /// Trait for processing DNS queries
@@ -439,6 +410,26 @@ mod tests {
             0x00, 0x00, // RDLEN = 0
         ];
         query
+    }
+
+    async fn ask(
+        query_manager: &std::sync::Arc<crate::query_manager::QueryManager>,
+        query: &[u8],
+        upstream_addr: std::net::SocketAddr,
+    ) -> Option<Vec<u8>> {
+        ().process_dns_query(
+            query,
+            "127.0.0.1:5353",
+            "UDP",
+            query_manager,
+            &[upstream_addr.to_string()],
+            2,
+            1232,
+            Some(std::sync::Arc::new(crate::stats::SharedStats::new())),
+            crate::load_balancer::LoadBalancingStrategy::Random,
+        )
+        .await
+        .map(|(response, _)| response)
     }
 
     #[test]
@@ -566,21 +557,8 @@ mod tests {
         let query_manager = std::sync::Arc::new(crate::query_manager::QueryManager::for_tests(
             2, 1232, false,
         ));
-        let response = ()
-            .process_dns_query(
-                &create_test_query_with_edns_version(0),
-                "127.0.0.1:5353",
-                "UDP",
-                &query_manager,
-                &[upstream_addr.to_string()],
-                2,
-                1232,
-                Some(std::sync::Arc::new(crate::stats::SharedStats::new())),
-                crate::load_balancer::LoadBalancingStrategy::Random,
-            )
-            .await;
-
-        assert!(response.is_none());
+        let query = create_test_query_with_edns_version(0);
+        assert!(ask(&query_manager, &query, upstream_addr).await.is_none());
     }
 
     #[tokio::test]
@@ -606,20 +584,7 @@ mod tests {
 
         let query_manager =
             std::sync::Arc::new(crate::query_manager::QueryManager::for_tests(2, 1232, true));
-        let response = ()
-            .process_dns_query(
-                &query,
-                "127.0.0.1:5353",
-                "UDP",
-                &query_manager,
-                &[upstream_addr.to_string()],
-                2,
-                1232,
-                Some(std::sync::Arc::new(crate::stats::SharedStats::new())),
-                crate::load_balancer::LoadBalancingStrategy::Random,
-            )
-            .await;
-        assert!(response.is_some());
+        assert!(ask(&query_manager, &query, upstream_addr).await.is_some());
 
         // The upstream only sees our own OPT record
         let forwarded = forwarded_rx.await.unwrap();
@@ -629,5 +594,57 @@ mod tests {
         );
         assert_eq!(dns_parser::arcount(&forwarded), 1);
         assert!(!dns_parser::is_dnssec_ok(&forwarded).unwrap());
+    }
+
+    fn has_cookie(packet: &[u8]) -> bool {
+        let mut stripped = packet.to_vec();
+        dns_parser::remove_edns_option(&mut stripped, dns_parser::EDNS_OPTION_COOKIE).unwrap();
+        stripped.len() != packet.len()
+    }
+
+    #[tokio::test]
+    async fn test_cached_response_is_adapted_to_each_client() {
+        let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = udp.local_addr().unwrap();
+        let (forwarded_tx, forwarded_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut packet = vec![0u8; 4096];
+            let (length, client) = udp.recv_from(&mut packet).await.unwrap();
+            packet.truncate(length);
+            let mut response = dns_parser::recover_question_from_response(&packet).unwrap();
+            dns_parser::set_qr(&mut response, true).unwrap();
+            dns_parser::set_ancount(&mut response, 1).unwrap();
+            // The answer name points back to the question
+            response.extend_from_slice(&[
+                0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x0e, 0x10, 0x00, 0x04, 192, 0, 2,
+                1,
+            ]);
+            dns_parser::add_edns_section(&mut response, 1232).unwrap();
+            dns_parser::add_cookie(&mut response, b"CLIENT01SERVER01");
+            udp.send_to(&response, client).await.unwrap();
+            forwarded_tx.send(packet).unwrap();
+        });
+
+        let mut query_manager = crate::query_manager::QueryManager::for_tests(2, 1232, true);
+        query_manager.set_cache(crate::cache::create_dns_cache(10));
+        let query_manager = std::sync::Arc::new(query_manager);
+        let mut responses = Vec::new();
+        for (tid, name, cookie) in [
+            (1u16, b"ExAmPlE", b"CLIENT01"),
+            (2, b"eXaMpLe", b"CLIENT02"),
+        ] {
+            let mut query = create_test_query_with_edns_version(0);
+            dns_parser::set_tid(&mut query, tid).unwrap();
+            query[13..20].copy_from_slice(name);
+            dns_parser::add_cookie(&mut query, cookie);
+            let response = ask(&query_manager, &query, upstream_addr).await.unwrap();
+            assert_eq!(dns_parser::tid(&response), tid);
+            assert_eq!(&response[13..20], name);
+            assert!(!has_cookie(&response));
+            responses.push(response);
+        }
+
+        assert!(!has_cookie(&forwarded_rx.await.unwrap()));
+        assert_eq!(responses[0][20..], responses[1][20..]);
     }
 }

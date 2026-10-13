@@ -37,6 +37,7 @@ pub const DNS_FLAG_DO: u16 = 0x8000; // DNSSEC OK flag in OPT record
 
 // EDNS option codes
 pub const EDNS_OPTION_CLIENT_SUBNET: u16 = 8; // Client Subnet (RFC 7871)
+pub const EDNS_OPTION_COOKIE: u16 = 10; // DNS Cookies (RFC 7873)
 
 // DNS header flags
 const DNS_FLAGS_QR: u16 = 1u16 << 15; // Query/Response flag
@@ -566,6 +567,28 @@ pub fn questions_match(query: &[u8], response: &[u8]) -> DnsResult<bool> {
     let response_fields = query_type_class(response)?;
 
     Ok(query_name.eq_ignore_ascii_case(&response_name) && query_fields == response_fields)
+}
+
+/// Makes the response question use the same letter case as the query.
+///
+/// Cached and shared responses keep the case of the first client that asked.
+/// Resolvers that randomize the case of their queries reject them.
+///
+/// Fails if the names don't match.
+pub fn restore_qname_case(response: &mut [u8], query: &[u8]) -> DnsResult<()> {
+    if qdcount(response) == 0 {
+        return Ok(());
+    }
+    let query_name = &query[DNS_HEADER_SIZE..skip_name(query, DNS_HEADER_SIZE)?];
+    let response_name_end = skip_name(response, DNS_HEADER_SIZE)?;
+    let response_name = &mut response[DNS_HEADER_SIZE..response_name_end];
+    if !response_name.eq_ignore_ascii_case(query_name) {
+        return Err(DnsError::InvalidPacket(
+            "Response question doesn't match the query".to_string(),
+        ));
+    }
+    response_name.copy_from_slice(query_name);
+    Ok(())
 }
 
 /// Extracts the minimum TTL from all records in a DNS packet
@@ -1354,37 +1377,10 @@ pub fn add_edns_client_subnet(
         ));
     }
 
-    // Get the current RDLEN
+    remove_edns_option(packet, EDNS_OPTION_CLIENT_SUBNET)?;
     let rdlen_offset = opt_record_rdlen_offset;
-    let mut rdlen = BigEndian::read_u16(&packet[rdlen_offset..rdlen_offset + 2]) as usize;
+    let rdlen = BigEndian::read_u16(&packet[rdlen_offset..rdlen_offset + 2]) as usize;
     let rdata_offset = rdlen_offset + 2;
-
-    let mut option_offset = rdata_offset;
-    while option_offset < rdata_offset + rdlen {
-        if rdata_offset + rdlen - option_offset < 4 {
-            return Err(DnsError::InvalidEdns(
-                "Truncated EDNS option header".to_string(),
-            ));
-        }
-        let option_code = BigEndian::read_u16(&packet[option_offset..option_offset + 2]);
-        let option_len =
-            BigEndian::read_u16(&packet[option_offset + 2..option_offset + 4]) as usize;
-        let option_end = option_offset
-            .checked_add(4 + option_len)
-            .ok_or_else(|| DnsError::InvalidEdns("EDNS option length overflow".to_string()))?;
-        if option_end > rdata_offset + rdlen {
-            return Err(DnsError::InvalidEdns(
-                "EDNS option exceeds OPT record data".to_string(),
-            ));
-        }
-        if option_code == EDNS_OPTION_CLIENT_SUBNET {
-            packet.drain(option_offset..option_end);
-            rdlen -= option_end - option_offset;
-            continue;
-        }
-        option_offset = option_end;
-    }
-    BigEndian::write_u16(&mut packet[rdlen_offset..rdlen_offset + 2], rdlen as u16);
 
     // Create the EDNS-client-subnet option
     let mut ecs_option = Vec::new();
@@ -2253,6 +2249,14 @@ mod tests {
         let qtype_offset = response.len() - 4;
         response[qtype_offset..qtype_offset + 2].copy_from_slice(&[0, 28]);
         assert!(!questions_match(&query, &response).unwrap());
+
+        response[13] = b'f';
+        assert!(restore_qname_case(&mut response, &query).is_err());
+
+        // Without a question, there is nothing to fix
+        response[5] = 0;
+        restore_qname_case(&mut response, &query).unwrap();
+        assert_eq!(response[13], b'f');
     }
 
     #[test]
@@ -2347,15 +2351,21 @@ mod tests {
     fn test_ecs_is_replaced_and_can_be_removed() {
         let mut query = create_test_query();
         add_edns_section(&mut query, 1232).unwrap();
+        // A cookie, which must survive the ECS removal
+        add_cookie(&mut query, b"CLIENT01");
         add_edns_client_subnet(&mut query, "192.0.2.129", 24, 56, 1232).unwrap();
         add_edns_client_subnet(&mut query, "198.51.100.9", 24, 56, 1232).unwrap();
 
         let ecs = extract_edns_client_subnet(&query).unwrap().unwrap();
         assert_eq!(ecs.address, vec![198, 51, 100]);
 
-        remove_edns_client_subnet(&mut query).unwrap();
+        remove_edns_option(&mut query, EDNS_OPTION_CLIENT_SUBNET).unwrap();
         assert!(extract_edns_client_subnet(&query).unwrap().is_none());
         assert_eq!(arcount(&query), 1);
+
+        let len = query.len();
+        remove_edns_option(&mut query, EDNS_OPTION_COOKIE).unwrap();
+        assert_eq!(query.len(), len - 12);
     }
 
     #[test]
@@ -2693,8 +2703,8 @@ pub struct EdnsClientSubnet {
     pub address: Vec<u8>,
 }
 
-/// Removes all EDNS client-subnet options while preserving other OPT options.
-pub fn remove_edns_client_subnet(packet: &mut Vec<u8>) -> DnsResult<()> {
+/// Removes every instance of an EDNS option, and keeps the other ones.
+pub fn remove_edns_option(packet: &mut Vec<u8>, option_code: u16) -> DnsResult<()> {
     let mut offset = skip_name(packet, DNS_OFFSET_QUESTION)?;
     if packet.len().saturating_sub(offset) < 4 {
         return Err(DnsError::PacketTooShort { offset });
@@ -2729,7 +2739,6 @@ pub fn remove_edns_client_subnet(packet: &mut Vec<u8>) -> DnsResult<()> {
                         "Truncated EDNS option header".to_string(),
                     ));
                 }
-                let option_code = BigEndian::read_u16(&packet[option_offset..option_offset + 2]);
                 let option_len =
                     BigEndian::read_u16(&packet[option_offset + 2..option_offset + 4]) as usize;
                 let option_end = option_offset.checked_add(4 + option_len).ok_or_else(|| {
@@ -2740,7 +2749,7 @@ pub fn remove_edns_client_subnet(packet: &mut Vec<u8>) -> DnsResult<()> {
                         "EDNS option exceeds OPT record data".to_string(),
                     ));
                 }
-                if option_code == EDNS_OPTION_CLIENT_SUBNET {
+                if BigEndian::read_u16(&packet[option_offset..option_offset + 2]) == option_code {
                     packet.drain(option_offset..option_end);
                     rdlen -= option_end - option_offset;
                     continue;
@@ -2754,6 +2763,16 @@ pub fn remove_edns_client_subnet(packet: &mut Vec<u8>) -> DnsResult<()> {
     }
 
     Ok(())
+}
+
+/// Appends a cookie to a packet that ends with an OPT record without options.
+#[cfg(test)]
+pub(crate) fn add_cookie(packet: &mut Vec<u8>, cookie: &[u8]) {
+    let rdlen = packet.len() - 2;
+    packet[rdlen..].copy_from_slice(&(4 + cookie.len() as u16).to_be_bytes());
+    packet.extend_from_slice(&EDNS_OPTION_COOKIE.to_be_bytes());
+    packet.extend_from_slice(&(cookie.len() as u16).to_be_bytes());
+    packet.extend_from_slice(cookie);
 }
 
 /// Removes the addresses that a referral has no business carrying.
