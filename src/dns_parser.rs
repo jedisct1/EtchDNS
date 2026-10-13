@@ -30,6 +30,7 @@ pub const DNS_TYPE_ANY: u16 = 255;
 
 // DNS classes
 pub const DNS_CLASS_IN: u16 = 1;
+pub const DNS_CLASS_CH: u16 = 3;
 pub const DNS_CLASS_ANY: u16 = 255;
 
 // DNSSEC related constants

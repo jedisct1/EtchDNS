@@ -1052,6 +1052,19 @@ impl QueryManager {
             return Some(receiver);
         }
 
+        if key.qclass == crate::dns_parser::DNS_CLASS_CH {
+            let log_msg = format!("Received CHAOS query for {}, returning REFUSED", key.name);
+
+            let (_, receiver) = Self::create_and_send_response_with_flags(
+                query_data,
+                crate::dns_processor::DNS_RCODE_REFUSED,
+                self.authoritative_dns,
+                Some(&log_msg),
+            );
+
+            return Some(receiver);
+        }
+
         // Check if the query is for a nonexistent domain
         if let Some(nx_zones) = &self.nx_zones
             && nx_zones.is_nonexistent(&key.name)
@@ -1505,6 +1518,33 @@ mod tests {
                 arcount
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_chaos_queries_are_refused() {
+        let query_manager = QueryManager::for_tests(1, 512, true);
+        let query = vec![
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'v',
+            b'e', b'r', b's', b'i', b'o', b'n', 0x04, b'b', b'i', b'n', b'd', 0x00, 0x00, 0x10,
+            0x00, 0x03,
+        ];
+        let key = DNSKey::from_packet(&query).unwrap();
+        let echo_resolver = |mut data: Vec<u8>| {
+            crate::dns_parser::set_qr(&mut data, true).unwrap();
+            Box::pin(std::future::ready(Ok(data)))
+                as futures::future::BoxFuture<'static, DnsResult<Vec<u8>>>
+        };
+
+        let mut receiver = query_manager
+            .submit_query_with_client(key, query, echo_resolver, "192.0.2.1:5353")
+            .await
+            .unwrap();
+        let response = receiver.recv().await.unwrap();
+
+        assert_eq!(
+            crate::dns_parser::rcode(&response.data),
+            crate::dns_processor::DNS_RCODE_REFUSED
+        );
     }
 
     #[tokio::test]
