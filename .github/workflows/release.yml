@@ -53,7 +53,7 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/etchdns "${PACKAGE_NAME}/"
           cp README.md "${PACKAGE_NAME}/"
           cp LICENSE "${PACKAGE_NAME}/" || echo "No LICENSE file found"
-          cp config.toml "${PACKAGE_NAME}/" || echo "No config.toml file found"
+          cp etchdns.toml "${PACKAGE_NAME}/"
           cp allowed_zones.txt "${PACKAGE_NAME}/" || echo "No allowed_zones.txt file found"
           cp nx_zones.txt "${PACKAGE_NAME}/" || echo "No nx_zones.txt file found"
 
@@ -115,7 +115,7 @@ jobs:
           cp target/${{ matrix.target }}/release/etchdns "${PACKAGE_NAME}/"
           cp README.md "${PACKAGE_NAME}/"
           cp LICENSE "${PACKAGE_NAME}/" || echo "No LICENSE file found"
-          cp config.toml "${PACKAGE_NAME}/" || echo "No config.toml file found"
+          cp etchdns.toml "${PACKAGE_NAME}/"
           cp allowed_zones.txt "${PACKAGE_NAME}/" || echo "No allowed_zones.txt file found"
           cp nx_zones.txt "${PACKAGE_NAME}/" || echo "No nx_zones.txt file found"
 
@@ -165,7 +165,7 @@ jobs:
           cp etchdns "${PACKAGE_NAME}/"
           cp README.md "${PACKAGE_NAME}/"
           cp LICENSE "${PACKAGE_NAME}/" || echo "No LICENSE file found"
-          cp config.toml "${PACKAGE_NAME}/" || echo "No config.toml file found"
+          cp etchdns.toml "${PACKAGE_NAME}/"
           cp allowed_zones.txt "${PACKAGE_NAME}/" || echo "No allowed_zones.txt file found"
           cp nx_zones.txt "${PACKAGE_NAME}/" || echo "No nx_zones.txt file found"
 
