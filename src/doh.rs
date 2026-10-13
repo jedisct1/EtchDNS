@@ -454,12 +454,22 @@ async fn handle_http_connection(
     });
 
     if let Err(err) = http1_builder().serve_connection(io, service).await {
-        if err.is_timeout() {
-            debug!("Closing idle DoH connection from {client_addr}: {err}");
+        if is_client_error(&err) {
+            debug!("Dropping DoH connection from {client_addr}: {err}");
         } else {
             error!("Error serving DoH connection from {client_addr}: {err}");
         }
     }
+}
+
+/// Errors from clients that stay idle, send garbage or hang up.
+fn is_client_error(err: &hyper::Error) -> bool {
+    err.is_parse()
+        || err.is_incomplete_message()
+        || err.is_timeout()
+        || std::error::Error::source(err)
+            .and_then(|source| source.downcast_ref::<std::io::Error>())
+            .is_some_and(crate::net::is_peer_gone)
 }
 
 /// The timer lets hyper close connections that never send a request
@@ -491,6 +501,35 @@ mod tests {
         assert!(matches!(result, Ok(Err(ref e)) if e.is_timeout()));
         assert!(started.elapsed() >= Duration::from_secs(30));
         drop(client);
+    }
+
+    #[tokio::test]
+    async fn test_junk_is_a_client_error() {
+        use tokio::io::AsyncWriteExt;
+
+        let tls_hello: &[u8] = &[0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc];
+        let partial_request: &[u8] = b"GET /dns-query?dns=AAAB";
+        for (junk, hang_up_abruptly) in [(tls_hello, false), (partial_request, true)] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            client.write_all(junk).await.unwrap();
+            if hang_up_abruptly {
+                client.set_zero_linger().unwrap();
+            }
+            drop(client);
+
+            let service = hyper::service::service_fn(|_req| async {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+            });
+            let err = http1_builder()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .unwrap_err();
+            assert!(is_client_error(&err), "{err:?}");
+        }
     }
 
     #[tokio::test]

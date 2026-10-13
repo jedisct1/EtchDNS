@@ -1623,7 +1623,7 @@ async fn process_tcp_connection(
 
                         // Check if the length is valid
                         if len as usize > dns_packet_len_max {
-                            error!(
+                            debug!(
                                 "TCP client {addr} sent a query with length {len} which exceeds the maximum of {dns_packet_len_max}"
                             );
                             break;
@@ -1700,6 +1700,12 @@ async fn process_tcp_connection(
                                         client.process_query().await;
                                         debug!("Completed processing task for TCP client {addr}");
                                     }
+                                    Err(e) if net::is_peer_gone(&e) => {
+                                        debug!(
+                                            "TCP client {addr} went away while sending a query: {e}"
+                                        );
+                                        break;
+                                    }
                                     Err(e) => {
                                         error!("Failed to read query from TCP client {addr}: {e}");
                                         break;
@@ -1715,9 +1721,8 @@ async fn process_tcp_connection(
                         }
                     }
                     Err(e) => {
-                        // If we get an EOF, the client closed the connection
-                        if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                            debug!("TCP client {addr} closed the connection");
+                        if net::is_peer_gone(&e) {
+                            debug!("TCP client {addr} closed the connection: {e}");
                         } else {
                             error!("Failed to read length from TCP client {addr}: {e}");
                         }
@@ -1793,6 +1798,12 @@ impl Client for TCPClient {
                         self.addr
                     );
                     debug!("Response successfully sent to client {}", self.addr);
+                }
+                Ok(Err(e)) if net::is_peer_gone(&e) => {
+                    debug!(
+                        "TCP client {} went away before getting its response: {e}",
+                        self.addr
+                    );
                 }
                 Ok(Err(e)) => {
                     error!("Failed to send response to TCP client {}: {}", self.addr, e);
@@ -2698,6 +2709,11 @@ async fn main() -> EtchDnsResult<()> {
                                 "Maximum TCP client count reached, dropping connection from {addr}"
                             );
                         }
+                    }
+                    Err(e) if net::is_peer_gone(&e) => {
+                        debug!(
+                            "TCP client went away before its connection was accepted on {socket_addr}: {e}"
+                        );
                     }
                     Err(e) => {
                         error!("Failed to accept TCP connection on {socket_addr}: {e}");
