@@ -25,14 +25,18 @@ pub async fn accept_with_retry(listener: &TcpListener, service: &str) -> (TcpStr
     loop {
         match listener.accept().await {
             Ok(connection) => return connection,
-            Err(e) if is_peer_gone(&e) => {
-                debug!("{service} client went away before its connection was accepted: {e}");
-            }
-            Err(e) => {
-                error!("Failed to accept {service} connection: {e}");
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+            Err(e) => handle_accept_error(&e, service).await,
         }
+    }
+}
+
+/// Logs a failed accept, and pauses before the next one if the problem is likely to last.
+pub async fn handle_accept_error(e: &io::Error, service: &str) {
+    if is_peer_gone(e) {
+        debug!("{service} client went away before its connection was accepted: {e}");
+    } else {
+        error!("Failed to accept {service} connection: {e}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 

@@ -185,7 +185,13 @@ async fn handle_doh_post_request(
                 ))
             }
             Ok(Err(e)) => {
-                error!("Failed to read request body: {e}");
+                if e.downcast_ref::<hyper::Error>()
+                    .is_some_and(is_client_error)
+                {
+                    debug!("DoH client {client_addr} went away while sending its query: {e}");
+                } else {
+                    error!("Failed to read request body: {e}");
+                }
                 Ok(create_error_response(
                     "Bad Request: Failed to read request body",
                     StatusCode::BAD_REQUEST,
@@ -464,12 +470,17 @@ async fn handle_http_connection(
 
 /// Errors from clients that stay idle, send garbage or hang up.
 fn is_client_error(err: &hyper::Error) -> bool {
-    err.is_parse()
+    (err.is_parse() && !is_hyper_bug(err))
         || err.is_incomplete_message()
         || err.is_timeout()
         || std::error::Error::source(err)
             .and_then(|source| source.downcast_ref::<std::io::Error>())
             .is_some_and(crate::net::is_peer_gone)
+}
+
+/// Hyper's own bugs also show up as parse errors, but they aren't the client's fault.
+fn is_hyper_bug(err: &hyper::Error) -> bool {
+    format!("{err:?}").contains("Parse(Internal)")
 }
 
 /// The timer lets hyper close connections that never send a request
@@ -509,7 +520,14 @@ mod tests {
 
         let tls_hello: &[u8] = &[0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc];
         let partial_request: &[u8] = b"GET /dns-query?dns=AAAB";
-        for (junk, hang_up_abruptly) in [(tls_hello, false), (partial_request, true)] {
+        let partial_body: &[u8] =
+            b"POST /dns-query HTTP/1.1\r\nContent-Length: 100\r\n\r\n\x12\x34";
+        for (junk, hang_up_abruptly) in [
+            (tls_hello, false),
+            (partial_request, true),
+            (partial_body, false),
+            (partial_body, true),
+        ] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
                 .await
@@ -521,14 +539,17 @@ mod tests {
             }
             drop(client);
 
-            let service = hyper::service::service_fn(|_req| async {
+            let service = hyper::service::service_fn(|req: Request<hyper::body::Incoming>| async {
+                let err = req.into_body().collect().await.unwrap_err();
+                assert!(is_client_error(&err), "{err:?}");
                 Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
             });
-            let err = http1_builder()
+            if let Err(err) = http1_builder()
                 .serve_connection(TokioIo::new(stream), service)
                 .await
-                .unwrap_err();
-            assert!(is_client_error(&err), "{err:?}");
+            {
+                assert!(is_client_error(&err), "{err:?}");
+            }
         }
     }
 

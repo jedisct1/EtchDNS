@@ -1810,7 +1810,7 @@ impl Client for TCPClient {
                     debug!("Error details: {e:?}");
                 }
                 Err(_) => {
-                    error!("Timed out sending response to TCP client {}", self.addr);
+                    debug!("TCP client {} stopped reading its responses", self.addr);
                     // A partly sent response would garble every later one
                     let _ = stream.shutdown().await;
                 }
@@ -2710,19 +2710,8 @@ async fn main() -> EtchDnsResult<()> {
                             );
                         }
                     }
-                    Err(e) if net::is_peer_gone(&e) => {
-                        debug!(
-                            "TCP client went away before its connection was accepted on {socket_addr}: {e}"
-                        );
-                    }
                     Err(e) => {
-                        error!("Failed to accept TCP connection on {socket_addr}: {e}");
-
-                        // Add a small delay before trying again to prevent spinning the CPU
-                        // if there's a persistent error condition
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-
-                        // Increment error counter for monitoring
+                        net::handle_accept_error(&e, "DNS TCP").await;
                         stats.increment_tcp_accept_errors().await;
                     }
                 }
