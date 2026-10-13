@@ -1422,11 +1422,33 @@ trait Client {
     async fn process_query(&self);
 }
 
+struct UdpResponseSender {
+    socket: Arc<UdpSocket>,
+    #[cfg(target_os = "openbsd")]
+    send_lock: Mutex<()>,
+}
+
+impl UdpResponseSender {
+    fn new(socket: Arc<UdpSocket>) -> Self {
+        Self {
+            socket,
+            #[cfg(target_os = "openbsd")]
+            send_lock: Mutex::new(()),
+        }
+    }
+
+    async fn send_to(&self, data: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
+        // OpenBSD can return EWOULDBLOCK for concurrent sends without a later writable event.
+        #[cfg(target_os = "openbsd")]
+        let _guard = self.send_lock.lock().await;
+        self.socket.send_to(data, addr).await
+    }
+}
+
 /// Structure to handle UDP clients
 #[derive(Clone)]
 struct UDPClient {
-    /// The UDP socket to use for sending responses
-    socket: Arc<UdpSocket>,
+    sender: Arc<UdpResponseSender>,
 
     /// The client's address
     addr: SocketAddr,
@@ -1457,7 +1479,7 @@ struct TCPClient {
 impl UDPClient {
     /// Create a new UDPClient
     fn new(
-        socket: Arc<UdpSocket>,
+        sender: Arc<UdpResponseSender>,
         data: Vec<u8>,
         addr: SocketAddr,
         upstream_servers: Vec<String>,
@@ -1502,7 +1524,7 @@ impl UDPClient {
         );
 
         Self {
-            socket,
+            sender,
             addr,
             query,
             query_manager,
@@ -1884,7 +1906,7 @@ impl Client for UDPClient {
             }
 
             // Send the response back to the client
-            if let Err(e) = self.socket.send_to(&response_data, self.addr).await {
+            if let Err(e) = self.sender.send_to(&response_data, self.addr).await {
                 error!("Failed to send response to UDP client {}: {}", self.addr, e);
             }
         }
@@ -2518,6 +2540,7 @@ async fn main() -> EtchDnsResult<()> {
     // Create a task for each UDP socket
     for (i, socket) in udp_sockets.iter().enumerate() {
         let socket = socket.clone();
+        let response_sender = Arc::new(UdpResponseSender::new(socket.clone()));
         let all_socket_addrs = socket_addrs.clone();
         let socket_addr = (*all_socket_addrs)[i];
         let udp_clients = udp_clients.clone();
@@ -2588,13 +2611,12 @@ async fn main() -> EtchDnsResult<()> {
                         let data = buf[..len].to_vec();
                         debug!("Cloned packet data for processing");
 
-                        // Clone the socket for the task
-                        let socket_clone = socket.clone();
+                        let response_sender = response_sender.clone();
                         debug!("Spawning new task to handle UDP client {addr}");
 
                         // Create a new UDPClient
                         let client = UDPClient::new(
-                            socket_clone,
+                            response_sender,
                             data,
                             addr,
                             upstream_servers.clone(),
@@ -2743,6 +2765,45 @@ async fn main() -> EtchDnsResult<()> {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[cfg(target_os = "openbsd")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_udp_responses_keep_sending() {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sender = Arc::new(UdpResponseSender::new(socket));
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let destination = receiver.local_addr().unwrap();
+        let drain = tokio::spawn(async move {
+            let mut packet = [0; 4096];
+            loop {
+                receiver.recv_from(&mut packet).await.unwrap();
+            }
+        });
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(8));
+        let mut sends = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let sender = sender.clone();
+            let barrier = barrier.clone();
+            sends.spawn(async move {
+                barrier.wait().await;
+                for _ in 0..10_000 {
+                    assert_eq!(sender.send_to(&[0; 4096], destination).await.unwrap(), 4096);
+                }
+            });
+        }
+
+        let result = tokio::time::timeout(Duration::from_secs(60), async {
+            while let Some(result) = sends.join_next().await {
+                result.unwrap();
+            }
+        })
+        .await;
+        sends.abort_all();
+        drain.abort();
+        let _ = drain.await;
+        result.expect("concurrent UDP replies stopped making progress");
+    }
 
     fn query() -> Vec<u8> {
         vec![
