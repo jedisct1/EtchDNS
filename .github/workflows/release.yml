@@ -133,10 +133,59 @@ jobs:
           path: etchdns-*-macos-${{ matrix.arch }}${{ matrix.features != '' && format('-{0}', matrix.features) || '' }}.zip
           if-no-files-found: error
 
+  build-openbsd:
+    name: Build OpenBSD (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start OpenBSD VM
+        uses: cross-platform-actions/action@v1.6.0
+        with:
+          operating_system: openbsd
+          architecture: x86-64
+          version: "7.9"
+          cpu_count: 4
+
+      - name: Build optimized binary
+        shell: cpa.sh {0}
+        run: |
+          sudo pkg_add -I rust
+
+          CARGO_TARGET_DIR="$HOME/target" cargo build --release
+
+          cp "$HOME/target/release/etchdns" etchdns
+          strip etchdns
+          ./etchdns --version
+
+      - name: Package binary
+        run: |
+          PACKAGE_NAME="etchdns-${VERSION}-openbsd-x86_64"
+          mkdir -p "${PACKAGE_NAME}"
+          cp etchdns "${PACKAGE_NAME}/"
+          cp README.md "${PACKAGE_NAME}/"
+          cp LICENSE "${PACKAGE_NAME}/" || echo "No LICENSE file found"
+          cp config.toml "${PACKAGE_NAME}/" || echo "No config.toml file found"
+          cp allowed_zones.txt "${PACKAGE_NAME}/" || echo "No allowed_zones.txt file found"
+          cp nx_zones.txt "${PACKAGE_NAME}/" || echo "No nx_zones.txt file found"
+
+          cd "${PACKAGE_NAME}"
+          sha256sum etchdns > SHA256SUMS.txt
+          cd ..
+
+          tar -czf "${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: etchdns-openbsd-x86_64
+          path: etchdns-*-openbsd-x86_64.tar.gz
+          if-no-files-found: error
+
   # Create a combined artifact with all binaries
   combine-artifacts:
     name: Combine Artifacts
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-macos, build-openbsd]
     runs-on: ubuntu-latest
     outputs:
       digests: ${{ steps.hash.outputs.digests }}
