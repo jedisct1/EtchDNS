@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.github.com/jedisct1/etchdns/master/img/logo.png" alt="EtchDNS Logo" width="300">
+  <img src="https://raw.github.com/dnscrypt/etchdns/master/img/logo.png" alt="EtchDNS Logo" width="300">
 </p>
 
 <h1 align="center">EtchDNS</h1>
@@ -194,7 +194,7 @@ These settings let you use WebAssembly for custom DNS processing:
 
 ### From release binaries
 
-Download the latest release from the [releases page](https://github.com/jedisct1/etchdns/releases).
+Download the latest release from the [releases page](https://github.com/dnscrypt/etchdns/releases).
 
 ### From source
 
